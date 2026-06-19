@@ -1,0 +1,780 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard | LeadHunter CRM{% endblock %}
+
+{% block content %}
+
+<style>
+    .dashboard-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 20px;
+        margin-bottom: 24px;
+    }
+
+    .dashboard-title h1 {
+        margin: 0 0 8px 0;
+        font-size: 30px;
+        letter-spacing: -0.03em;
+    }
+
+    .dashboard-title p {
+        margin: 0;
+        max-width: 720px;
+    }
+
+    .dashboard-actions {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+    }
+
+    .workflow-strip {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 12px;
+        margin-bottom: 22px;
+    }
+
+    .workflow-step {
+        padding: 14px;
+        border: 1px solid rgba(148, 163, 184, 0.18);
+        border-radius: 14px;
+        background: rgba(15, 23, 42, 0.55);
+    }
+
+    .workflow-step strong {
+        display: block;
+        margin-bottom: 4px;
+    }
+
+    .workflow-step span {
+        font-size: 13px;
+        color: var(--muted);
+    }
+
+    .stats-grid {
+        display: grid;
+        grid-template-columns: repeat(5, minmax(130px, 1fr));
+        gap: 14px;
+        margin-bottom: 22px;
+    }
+
+    .stat-card.main-stat {
+        border-color: rgba(56, 189, 248, 0.45);
+        background: linear-gradient(180deg, rgba(56, 189, 248, 0.08), var(--panel));
+    }
+
+    .section-card {
+        margin-bottom: 24px;
+    }
+
+    .section-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 18px;
+        margin-bottom: 18px;
+    }
+
+    .section-title h2 {
+        margin: 0 0 6px 0;
+    }
+
+    .section-title p {
+        margin: 0;
+    }
+
+    .form-grid-search {
+        display: grid;
+        grid-template-columns: 1.2fr 1.4fr 1fr 1fr 130px;
+        gap: 16px;
+        align-items: end;
+    }
+
+    .form-grid-filter {
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr 1fr 140px;
+        gap: 16px;
+        align-items: end;
+    }
+
+    .filter-actions {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        margin-top: 12px;
+    }
+
+    .table-wrap {
+        overflow-x: auto;
+        border: 1px solid rgba(148, 163, 184, 0.16);
+        border-radius: 14px;
+    }
+
+    .leads-table {
+        min-width: 1150px;
+    }
+
+    .lead-company {
+        min-width: 260px;
+    }
+
+    .lead-name {
+        font-size: 15px;
+        margin-bottom: 8px;
+    }
+
+    .lead-meta,
+    .lead-contact,
+    .lead-work,
+    .activity-box {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 5px;
+    }
+
+    .lead-contact a,
+    .lead-meta a {
+        word-break: break-all;
+    }
+
+    .missing-email {
+        color: var(--warning);
+        font-weight: 700;
+    }
+
+    .score-pill {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 44px;
+        padding: 5px 9px;
+        border-radius: 999px;
+        background: rgba(245, 158, 11, 0.13);
+        border: 1px solid rgba(245, 158, 11, 0.35);
+        color: #fbbf24;
+        font-weight: 800;
+    }
+
+    .follow-up-form,
+    .actions-stack {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .follow-up-form {
+        min-width: 145px;
+    }
+
+    .actions-stack {
+        min-width: 160px;
+    }
+
+    .actions-stack form,
+    .actions-stack a,
+    .actions-stack button {
+        width: 100%;
+    }
+
+    .status-form {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        min-width: 190px;
+    }
+
+    .status-form select {
+        min-width: 125px;
+    }
+
+    .message-preview {
+        background: #020617;
+        margin: 8px 0 18px 0;
+        border: 1px solid rgba(148, 163, 184, 0.18);
+    }
+
+    .message-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 18px;
+    }
+
+    .message-actions {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        align-items: center;
+        margin-top: 12px;
+    }
+
+    details.card summary {
+        cursor: pointer;
+        font-size: 18px;
+        font-weight: 800;
+        list-style: none;
+    }
+
+    details.card summary::-webkit-details-marker {
+        display: none;
+    }
+
+    .manual-form-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 14px;
+    }
+
+    .empty-state {
+        padding: 28px;
+        text-align: center;
+        border: 1px dashed rgba(148, 163, 184, 0.35);
+        border-radius: 14px;
+        background: rgba(15, 23, 42, 0.4);
+    }
+
+    @media (max-width: 1200px) {
+        .workflow-strip,
+        .stats-grid,
+        .form-grid-search,
+        .form-grid-filter {
+            grid-template-columns: repeat(2, 1fr);
+        }
+    }
+
+    @media (max-width: 760px) {
+        .dashboard-header,
+        .section-header {
+            flex-direction: column;
+        }
+
+        .dashboard-actions {
+            justify-content: flex-start;
+            width: 100%;
+        }
+
+        .dashboard-actions a,
+        .dashboard-actions form,
+        .dashboard-actions button {
+            width: 100%;
+        }
+
+        .workflow-strip,
+        .stats-grid,
+        .form-grid-search,
+        .form-grid-filter,
+        .message-grid,
+        .manual-form-grid {
+            grid-template-columns: 1fr;
+        }
+    }
+</style>
+
+<div class="dashboard-header">
+    <div class="dashboard-title">
+        <h1>Dashboard</h1>
+        <p class="muted">
+            Cieľ nie je mať veľa leadov. Cieľ je nájsť firmy s kontaktom, poslať dobré oslovenie a sledovať odpovede.
+        </p>
+    </div>
+
+    <div class="dashboard-actions">
+        <a href="{{ url_for('main.home') }}" class="btn btn-small btn-secondary">Obnoviť</a>
+
+        <form method="POST" action="{{ url_for('main.find_missing_emails') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit" class="btn-small">Nájsť chýbajúce emaily</button>
+        </form>
+    </div>
+</div>
+
+<div class="workflow-strip">
+    <div class="workflow-step">
+        <strong>1. Nájdi firmy</strong>
+        <span>Bot pridá kandidátov do CRM.</span>
+    </div>
+    <div class="workflow-step">
+        <strong>2. Doplň emaily</strong>
+        <span>Bez emailu je lead skoro mŕtvy.</span>
+    </div>
+    <div class="workflow-step">
+        <strong>3. Vyfiltruj kvalitu</strong>
+        <span>Rieš hlavne skóre 4–5.</span>
+    </div>
+    <div class="workflow-step">
+        <strong>4. Oslov a sleduj</strong>
+        <span>AI správa, odoslanie, odpoveď.</span>
+    </div>
+</div>
+
+<!-- HLAVNÉ ŠTATISTIKY -->
+<div class="stats-grid">
+    <div class="stat-card main-stat">
+        <div class="number">{{ stats.total }}</div>
+        <div class="label">Všetky leady</div>
+    </div>
+
+    <div class="stat-card main-stat">
+        <div class="number">{{ stats.to_contact }}</div>
+        <div class="label">Čakajú na oslovenie</div>
+    </div>
+
+    <div class="stat-card main-stat">
+        <div class="number">{{ stats.follow_up_today }}</div>
+        <div class="label">Follow-up dnes</div>
+    </div>
+
+    <div class="stat-card main-stat">
+        <div class="number">{{ stats.replies }}</div>
+        <div class="label">Odpovede</div>
+    </div>
+
+    <div class="stat-card main-stat">
+        <div class="number">{{ stats.reply_rate }}%</div>
+        <div class="label">Miera odpovedí</div>
+    </div>
+</div>
+
+<!-- DOPLNKOVÉ ŠTATISTIKY -->
+<div class="stats-grid">
+    <div class="stat-card">
+        <div class="number">{{ stats.new }}</div>
+        <div class="label">Nové</div>
+    </div>
+
+    <div class="stat-card">
+        <div class="number">{{ stats.contacted }}</div>
+        <div class="label">Oslovené</div>
+    </div>
+
+    <div class="stat-card">
+        <div class="number">{{ stats.emails_sent }}</div>
+        <div class="label">Odoslané emaily</div>
+    </div>
+
+    <div class="stat-card">
+        <div class="number">{{ stats.inspections }}</div>
+        <div class="label">Obhliadky</div>
+    </div>
+
+    <div class="stat-card">
+        <div class="number">{{ stats.won }}</div>
+        <div class="label">Vyhraté</div>
+    </div>
+</div>
+
+<!-- BOT NA HĽADANIE FIRIEM -->
+<section class="card section-card">
+    <div class="section-header">
+        <div class="section-title">
+            <h2>1. Nájsť nové firmy</h2>
+            <p class="muted">Zadaj lokalitu, typ firmy a službu. Nerieš široký zoznam, hľadaj firmy, ktorým vieš reálne pomôcť.</p>
+        </div>
+    </div>
+
+    <form method="POST" action="{{ url_for('main.find_leads') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+        <div class="form-grid-search">
+            <div>
+                <label>Lokality</label>
+                <input type="text" name="locations" placeholder="Poprad, Kežmarok, Prešov">
+            </div>
+
+            <div>
+                <label>Typy firiem</label>
+                <input type="text" name="company_types" placeholder="kuchynské štúdio, rekonštrukcie bytov">
+            </div>
+
+            <div>
+                <label>Typ práce</label>
+                <select name="work_type">
+                    <option value="">-- vyber --</option>
+                    {% for work_type in work_types %}
+                        <option value="{{ work_type }}">{{ work_type }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <div>
+                <label>Podtyp práce</label>
+                <input type="text" name="work_subtype" placeholder="Elektro pre kuchyne">
+            </div>
+
+            <div>
+                <label>Limit</label>
+                <input type="number" name="max_results" min="1" max="20" value="5">
+            </div>
+        </div>
+
+        <div class="form-actions">
+            <button type="submit">Nájsť firmy</button>
+        </div>
+    </form>
+</section>
+
+<!-- FILTRE -->
+<section class="card section-card">
+    <div class="section-header">
+        <div class="section-title">
+            <h2>2. Vyfiltrovať leady</h2>
+            <p class="muted">Najlepší pracovný režim: skóre 4+, email vyplnený, potom AI oslovenie a follow-up.</p>
+        </div>
+    </div>
+
+    <form method="GET" action="{{ url_for('main.home') }}">
+        <div class="form-grid-filter">
+            <div>
+                <label>Stav</label>
+                <select name="status">
+                    <option value="">Všetky</option>
+                    {% for status in lead_statuses %}
+                        <option value="{{ status }}" {% if filters.status == status %}selected{% endif %}>{{ status }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <div>
+                <label>Typ práce</label>
+                <select name="work_type">
+                    <option value="">Všetky</option>
+                    {% for work_type in work_types %}
+                        <option value="{{ work_type }}" {% if filters.work_type == work_type %}selected{% endif %}>{{ work_type }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <div>
+                <label>Min. skóre</label>
+                <select name="score">
+                    <option value="">Všetky</option>
+                    <option value="3" {% if filters.score == "3" %}selected{% endif %}>3+</option>
+                    <option value="4" {% if filters.score == "4" %}selected{% endif %}>4+</option>
+                    <option value="5" {% if filters.score == "5" %}selected{% endif %}>5</option>
+                </select>
+            </div>
+
+            <div>
+                <label>Follow-up</label>
+                <select name="follow_up">
+                    <option value="">Všetky</option>
+                    <option value="today" {% if filters.follow_up == "today" %}selected{% endif %}>Dnes / zmeškané</option>
+                </select>
+            </div>
+
+            <div>
+                <button type="submit" style="width: 100%;">Filtrovať</button>
+            </div>
+        </div>
+
+        <div class="filter-actions">
+            <a href="{{ url_for('main.home') }}" class="btn btn-small btn-secondary">Vyčistiť filtre</a>
+        </div>
+    </form>
+</section>
+
+<!-- ZOZNAM LEADOV -->
+<section class="card section-card">
+    <div class="section-header">
+        <div class="section-title">
+            <h2>3. Pracovať s leadmi</h2>
+            <p class="muted">Poradie práce: nájsť email → AI oslovenie → skontrolovať text → odoslať → nastaviť follow-up.</p>
+        </div>
+    </div>
+
+    {% if leads %}
+    <table class="leads-table">
+                <thead>
+                    <tr>
+                        <th>Firma</th>
+                        <th>Práca</th>
+                        <th>Kontakt</th>
+                        <th>Follow-up</th>
+                        <th>Aktivita</th>
+                        <th>Stav</th>
+                        <th>Akcie</th>
+                    </tr>
+                </thead>
+        <div class="table-wrap">
+            
+
+                <tbody>
+                    {% for lead in leads %}
+                        <tr>
+                            <td class="lead-company">
+                                <div class="lead-name"><strong>{{ lead.company_name }}</strong></div>
+
+                                <div class="lead-meta">
+                                    {% if lead.source %}<span class="badge">{{ lead.source }}</span>{% endif %}
+                                    {% if lead.address %}<span class="muted">{{ lead.address }}</span>{% endif %}
+                                    {% if lead.website %}
+                                        <a href="{{ lead.website }}" target="_blank" class="muted">{{ lead.website }}</a>
+                                    {% else %}
+                                        <span class="muted">Web chýba</span>
+                                    {% endif %}
+                                </div>
+                            </td>
+
+                            <td>
+                                <div class="lead-work">
+                                    {% if lead.company_segment %}
+                                        <span class="badge">{{ lead.company_segment }}</span>
+                                    {% else %}
+                                        <span class="muted">Segment chýba</span>
+                                    {% endif %}
+
+                                    {% if lead.work_type %}
+                                        <span class="badge">{{ lead.work_type }}</span>
+                                    {% endif %}
+
+                                    {% if lead.work_subtype %}
+                                        <span class="muted">{{ lead.work_subtype }}</span>
+                                    {% endif %}
+
+                                    <span class="score-pill">{{ lead.lead_score }}/5</span>
+                                </div>
+                            </td>
+
+                            <td>
+                                <div class="lead-contact">
+                                    {% if lead.email %}
+                                        <span>{{ lead.email }}</span>
+                                    {% else %}
+                                        <span class="missing-email">Email chýba</span>
+
+                                        {% if lead.website %}
+                                            <form method="POST" action="{{ url_for('main.find_lead_email', lead_id=lead.id) }}">
+                                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                                <button type="submit" class="btn-small">Nájsť email</button>
+                                            </form>
+                                        {% endif %}
+                                    {% endif %}
+
+                                    {% if lead.phone %}
+                                        <span class="muted">{{ lead.phone }}</span>
+                                    {% else %}
+                                        <span class="muted">Telefón chýba</span>
+                                    {% endif %}
+                                </div>
+                            </td>
+
+                            <td>
+                                <form method="POST" action="{{ url_for('main.set_follow_up', lead_id=lead.id) }}" class="follow-up-form">
+                                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                    <input type="date" name="next_follow_up_at" value="{% if lead.next_follow_up_at %}{{ lead.next_follow_up_at.strftime('%Y-%m-%d') }}{% endif %}">
+                                    <button type="submit" class="btn-small">Uložiť</button>
+                                </form>
+                            </td>
+
+                            <td>
+                                <div class="activity-box">
+                                    {% set last_activity = last_activities.get(lead.id) %}
+
+                                    {% if last_activity %}
+                                        <span class="badge">{{ last_activity.activity_type }}</span>
+                                        <span class="muted">{{ last_activity.created_at.strftime('%d.%m.%Y %H:%M') }}</span>
+
+                                        {% if last_activity.note %}
+                                            <span class="muted">{{ last_activity.note[:80] }}{% if last_activity.note|length > 80 %}...{% endif %}</span>
+                                        {% endif %}
+                                    {% else %}
+                                        <span class="muted">Zatiaľ nič</span>
+                                    {% endif %}
+                                </div>
+                            </td>
+
+                            <td>
+                                <form method="POST" action="{{ url_for('main.update_lead_status', lead_id=lead.id) }}" class="status-form">
+                                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+                                    <select name="status">
+                                        {% for status in lead_statuses %}
+                                            <option value="{{ status }}" {% if lead.status == status %}selected{% endif %}>{{ status }}</option>
+                                        {% endfor %}
+                                    </select>
+
+                                    <button type="submit" class="btn-small">OK</button>
+                                </form>
+                            </td>
+
+                            <td>
+                                <div class="actions-stack">
+                                    <a href="{{ url_for('main.lead_detail', lead_id=lead.id) }}" class="btn btn-small">Detail</a>
+
+                                    <form method="POST" action="{{ url_for('main.generate_message', lead_id=lead.id) }}">
+                                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                        <button type="submit" class="btn-small">AI oslovenie</button>
+                                    </form>
+
+                                    <form method="POST" action="{{ url_for('main.check_reply', lead_id=lead.id) }}">
+                                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                        <button type="submit" class="btn-small btn-secondary">Skontrolovať odpoveď</button>
+                                    </form>
+
+                                    {% if lead.email %}
+                                        <form method="POST" action="{{ url_for('main.find_lead_email', lead_id=lead.id) }}">
+                                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                            <button type="submit" class="btn-small btn-secondary">Prehľadať email znova</button>
+                                        </form>
+                                    {% endif %}
+
+                                    <form method="POST" action="{{ url_for('main.delete_lead', lead_id=lead.id) }}" onsubmit="return confirm('Naozaj chceš vymazať tento lead?');">
+                                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                        <button type="submit" class="btn-danger btn-small">Vymazať</button>
+                                    </form>
+                                </div>
+                            </td>
+                        </tr>
+
+                        {% if lead.reason_to_contact or lead.suggested_message %}
+                            <tr>
+                                <td colspan="7">
+                                    <div class="card message-preview">
+                                        <div class="message-grid">
+                                            {% if lead.reason_to_contact %}
+                                                <div>
+                                                    <strong>Dôvod oslovenia</strong>
+                                                    <div class="muted" style="margin-top: 6px;">{{ lead.reason_to_contact }}</div>
+                                                </div>
+                                            {% endif %}
+
+                                            {% if lead.suggested_message %}
+                                                <div>
+                                                    <strong>Pripravené oslovenie</strong>
+                                                    <div class="muted" style="margin-top: 6px;">Pred odoslaním skontroluj, či firma fakt sedí na danú službu. Inak páliš reputáciu.</div>
+                                                </div>
+                                            {% endif %}
+                                        </div>
+
+                                        {% if lead.suggested_message %}
+                                            <form method="POST" style="margin-top: 16px;">
+                                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+                                                <label>Predmet emailu</label>
+                                                <input type="text" name="email_subject" value="Možnosť spolupráce">
+
+                                                <label>Text oslovenia</label>
+                                                <textarea name="suggested_message" style="min-height: 180px;">{{ lead.suggested_message }}</textarea>
+
+                                                <div class="message-actions">
+                                                    <button type="submit" class="btn-small" formaction="{{ url_for('main.save_message', lead_id=lead.id) }}">Uložiť text</button>
+
+                                                    {% if lead.email %}
+                                                        <button type="submit" class="btn-small" formaction="{{ url_for('main.send_email', lead_id=lead.id) }}" onclick="return confirm('Naozaj chceš odoslať email na {{ lead.email }}?');">Odoslať email</button>
+                                                    {% else %}
+                                                        <span class="missing-email">Chýba email, nedá sa odoslať.</span>
+                                                    {% endif %}
+                                                </div>
+                                            </form>
+                                        {% endif %}
+                                    </div>
+                                </td>
+                            </tr>
+                        {% endif %}
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    {% else %}
+        <div class="empty-state">
+            <h3 style="margin-top: 0;">Zatiaľ nemáš žiadne leady</h3>
+            <p class="muted">Začni hore cez bota. Ručné pridávanie nechaj iba ako záložnú možnosť.</p>
+        </div>
+    {% endif %}
+</section>
+
+<!-- MANUÁLNE PRIDANIE -->
+<details class="card">
+    <summary>+ Pridať lead ručne</summary>
+
+    <p class="muted" style="margin-top: 8px;">Používaj len vtedy, keď máš firmu z reálneho kontaktu alebo odporúčania. Inak je lepší bot a filtrovanie.</p>
+
+    <form method="POST" action="{{ url_for('main.home') }}" style="margin-top: 18px;">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+        <label>Názov firmy *</label>
+        <input type="text" name="company_name" required placeholder="ABC Rekonštrukcie s.r.o.">
+
+        <div class="manual-form-grid">
+            <div>
+                <label>Email</label>
+                <input type="email" name="email" placeholder="info@firma.sk">
+            </div>
+
+            <div>
+                <label>Telefón</label>
+                <input type="text" name="phone" placeholder="+421...">
+            </div>
+        </div>
+
+        <label>Web</label>
+        <input type="url" name="website" placeholder="https://...">
+
+        <div class="manual-form-grid">
+            <div>
+                <label>Mesto</label>
+                <input type="text" name="city" placeholder="Poprad">
+            </div>
+
+            <div>
+                <label>Krajina</label>
+                <input type="text" name="country" value="Slovensko">
+            </div>
+        </div>
+
+        <label>Segment firmy</label>
+        <select name="company_segment">
+            <option value="">-- vyber segment --</option>
+            {% for segment in company_segments %}
+                <option value="{{ segment }}">{{ segment }}</option>
+            {% endfor %}
+        </select>
+
+        <div class="manual-form-grid">
+            <div>
+                <label>Typ práce</label>
+                <select name="work_type">
+                    <option value="">-- vyber --</option>
+                    {% for work_type in work_types %}
+                        <option value="{{ work_type }}">{{ work_type }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <div>
+                <label>Skóre 1–5</label>
+                <input type="number" name="lead_score" min="1" max="5" value="3">
+            </div>
+        </div>
+
+        <label>Podtyp práce</label>
+        <input type="text" name="work_subtype" placeholder="Príprava elektro pre kuchyňu">
+
+        <label>Stav</label>
+        <select name="status">
+            {% for status in lead_statuses %}
+                <option value="{{ status }}">{{ status }}</option>
+            {% endfor %}
+        </select>
+
+        <label>Dôvod oslovenia</label>
+        <textarea name="reason_to_contact" placeholder="Prečo má zmysel túto firmu osloviť?"></textarea>
+
+        <label>AI zhrnutie</label>
+        <textarea name="ai_summary" placeholder="Sem neskôr pôjde AI analýza firmy."></textarea>
+
+        <label>Navrhnutá správa</label>
+        <textarea name="suggested_message" placeholder="Sem neskôr pôjde návrh oslovenia."></textarea>
+
+        <div class="form-actions">
+            <button type="submit">Pridať lead</button>
+        </div>
+    </form>
+</details>
+
+{% endblock %}

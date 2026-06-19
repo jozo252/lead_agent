@@ -1,0 +1,9 @@
+Co viem spravit:
+-ziskat firmy v okoli,
+-ziskat ich email
+-spravit ai oslovenie,
+-poslať ho
+-ziskat odpoved asi
+-spravit reply na odpoved
+-poslat ten reply.
+

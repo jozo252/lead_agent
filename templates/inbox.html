@@ -1,0 +1,460 @@
+{% extends "base.html" %}
+
+{% block title %}Prijaté emaily{% endblock %}
+
+{% block content %}
+
+<div class="page-header">
+    <div>
+        <h1>Prijaté emaily</h1>
+        <p>Správy prijaté cez IMAP / Postmark. Odtiaľto vieš rovno pripraviť odpoveď.</p>
+    </div>
+
+    <a href="{{ url_for('main.inbox') }}" class="btn btn-primary">
+        Načítať nové emaily
+    </a>
+</div>
+
+<div class="inbox-layout">
+
+    <!-- EMAIL LIST -->
+    <div class="email-list">
+
+        {% if emails %}
+            {% for email in emails %}
+                <a href="{{ url_for('main.inbox_detail', email_id=email.id) }}"
+                   class="email-card {% if selected_email and selected_email.id == email.id %}active{% endif %}">
+
+                    <div class="email-card-top">
+                        <strong>
+                            {{ email.from_name or email.from_email or 'Neznámy odosielateľ' }}
+                        </strong>
+
+                        <span class="email-date">
+                            {{ email.received_at.strftime('%d.%m.%Y %H:%M') if email.received_at else '' }}
+                        </span>
+                    </div>
+
+                    <div class="email-subject">
+                        {{ email.subject or '(bez predmetu)' }}
+                    </div>
+
+                    <div class="email-preview">
+                        {{ (email.text_body or '')[:140] }}...
+                    </div>
+
+                    <div class="email-status-row">
+                        {% if email.reply_sent_at %}
+                            <span class="badge badge-sent">Odpísané</span>
+                        {% elif email.ai_reply_draft %}
+                            <span class="badge badge-ai">AI návrh</span>
+                        {% else %}
+                            <span class="badge badge-new">Nový</span>
+                        {% endif %}
+
+                        {% if email.lead %}
+                            <span class="badge badge-lead">
+                                Lead: {{ email.lead.company_name if email.lead.company_name else 'prepojený' }}
+                            </span>
+                        {% endif %}
+                    </div>
+
+                </a>
+            {% endfor %}
+        {% else %}
+            <div class="empty-box">
+                Zatiaľ nemáš žiadne prijaté emaily.
+            </div>
+        {% endif %}
+
+    </div>
+
+    <!-- EMAIL DETAIL -->
+    <div class="email-detail">
+
+        {% if selected_email %}
+
+            <div class="email-detail-header">
+                <h2>{{ selected_email.subject or '(bez predmetu)' }}</h2>
+
+                <div class="email-meta">
+                    <div>
+                        <strong>Od:</strong>
+                        {{ selected_email.from_name or '' }}
+                        &lt;{{ selected_email.from_email or 'bez emailu' }}&gt;
+                    </div>
+
+                    <div>
+                        <strong>Prijaté:</strong>
+                        {{ selected_email.received_at.strftime('%d.%m.%Y %H:%M') if selected_email.received_at else '' }}
+                    </div>
+
+                    {% if selected_email.lead %}
+                        <div>
+                            <strong>Lead:</strong>
+                            {{ selected_email.lead.company_name if selected_email.lead.company_name else 'Prepojený lead' }}
+                        </div>
+                    {% endif %}
+                </div>
+            </div>
+
+            <div class="email-body-box">
+                {% if selected_email.text_body %}
+                    {{ selected_email.text_body | replace('\n', '<br>') | safe }}
+                {% elif selected_email.html_body %}
+                    {{ selected_email.html_body | safe }}
+                {% else %}
+                    <em>Správa nemá textový obsah.</em>
+                {% endif %}
+            </div>
+
+            <hr>
+
+            <div class="reply-section">
+
+                <div class="reply-header">
+                    <h3>Odpoveď</h3>
+
+                    <form method="POST"
+                          action="{{ url_for('main.generate_reply', email_id=selected_email.id) }}">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button type="submit" class="btn btn-secondary">
+                            Vygenerovať AI odpoveď
+                        </button>
+                    </form>
+                </div>
+
+                <form method="POST"
+                      action="{{ url_for('main.send_reply', email_id=selected_email.id) }}">
+
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+                    <div class="form-group">
+                        <label>Komu</label>
+                        <input type="email"
+                               name="to_email"
+                               value="{{ selected_email.from_email or '' }}"
+                               class="form-control"
+                               required>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Predmet</label>
+                        <input type="text"
+                               name="subject"
+                               value="Re: {{ selected_email.subject or '' }}"
+                               class="form-control"
+                               required>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Text odpovede</label>
+                        <textarea name="reply_body"
+                                  class="form-control reply-textarea"
+                                  rows="12"
+                                  placeholder="Tu bude AI návrh. Upravíš ho a odošleš.">{{ selected_email.ai_reply_draft or '' }}</textarea>
+                    </div>
+
+                    <div class="reply-actions">
+                        <button type="submit" class="btn btn-primary">
+                            Odoslať odpoveď
+                        </button>
+
+                        <button type="button" class="btn btn-muted" onclick="copyReply()">
+                            Kopírovať text
+                        </button>
+                    </div>
+
+                </form>
+
+            </div>
+
+        {% else %}
+
+            <div class="empty-detail">
+                <h2>Vyber email</h2>
+                <p>Naľavo klikni na správu. Tu sa zobrazí obsah a odpoveď.</p>
+            </div>
+
+        {% endif %}
+
+    </div>
+
+</div>
+
+<script>
+function copyReply() {
+    const textarea = document.querySelector('textarea[name="reply_body"]');
+
+    if (!textarea) return;
+
+    textarea.select();
+    textarea.setSelectionRange(0, 99999);
+    document.execCommand("copy");
+
+    alert("Text odpovede bol skopírovaný.");
+}
+</script>
+
+<style>
+.page-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 22px;
+    gap: 16px;
+}
+
+.page-header h1 {
+    margin: 0;
+    font-size: 28px;
+}
+
+.page-header p {
+    margin: 6px 0 0;
+    color: var(--muted);
+}
+
+.inbox-layout {
+    display: grid;
+    grid-template-columns: 360px 1fr;
+    gap: 20px;
+    min-height: 75vh;
+}
+
+.email-list {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 12px;
+    overflow-y: auto;
+    max-height: 78vh;
+}
+
+.email-card {
+    display: block;
+    text-decoration: none;
+    color: var(--text);
+    background: var(--panel-light);
+    border: 1px solid transparent;
+    border-radius: 12px;
+    padding: 14px;
+    margin-bottom: 10px;
+    transition: 0.15s;
+}
+
+.email-card:hover {
+    border-color: var(--accent);
+    transform: translateY(-1px);
+}
+
+.email-card.active {
+    border-color: var(--accent);
+    background: rgba(56, 189, 248, 0.08);
+}
+
+.email-card-top {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    font-size: 14px;
+}
+
+.email-date {
+    color: var(--muted);
+    font-size: 12px;
+    white-space: nowrap;
+}
+
+.email-subject {
+    margin-top: 8px;
+    font-weight: 600;
+}
+
+.email-preview {
+    margin-top: 8px;
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.4;
+}
+
+.email-status-row {
+    margin-top: 10px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.badge {
+    display: inline-block;
+    padding: 4px 8px;
+    border-radius: 999px;
+    background: #374151;
+    color: #d1d5db;
+    font-size: 12px;
+}
+
+.badge-new {
+    background: rgba(239, 68, 68, 0.18);
+    color: #fca5a5;
+}
+
+.badge-ai {
+    background: rgba(245, 158, 11, 0.18);
+    color: #fcd34d;
+}
+
+.badge-sent {
+    background: rgba(34, 197, 94, 0.18);
+    color: #86efac;
+}
+
+.badge-lead {
+    background: rgba(56, 189, 248, 0.16);
+    color: #7dd3fc;
+}
+
+.email-detail {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 22px;
+    overflow-y: auto;
+    max-height: 78vh;
+}
+
+.email-detail-header h2 {
+    margin: 0 0 12px;
+    font-size: 24px;
+}
+
+.email-meta {
+    color: var(--muted);
+    font-size: 14px;
+    line-height: 1.7;
+}
+
+.email-body-box {
+    margin-top: 22px;
+    background: var(--panel-light);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px;
+    line-height: 1.6;
+}
+
+.reply-section {
+    margin-top: 24px;
+}
+
+.reply-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 16px;
+}
+
+.reply-header h3 {
+    margin: 0;
+}
+
+.form-group {
+    margin-bottom: 16px;
+}
+
+.form-group label {
+    display: block;
+    margin-bottom: 6px;
+    color: var(--muted);
+    font-size: 14px;
+}
+
+.form-control {
+    width: 100%;
+    background: var(--panel-light);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 10px;
+    padding: 11px 12px;
+    font-size: 15px;
+}
+
+.form-control:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.reply-textarea {
+    resize: vertical;
+    min-height: 260px;
+    line-height: 1.5;
+}
+
+.reply-actions {
+    display: flex;
+    gap: 10px;
+    justify-content: flex-end;
+}
+
+.btn {
+    display: inline-block;
+    border: none;
+    border-radius: 10px;
+    padding: 10px 14px;
+    text-decoration: none;
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 14px;
+}
+
+.btn-primary {
+    background: var(--accent);
+    color: #020617;
+}
+
+.btn-secondary {
+    background: #334155;
+    color: #e5e7eb;
+}
+
+.btn-muted {
+    background: #1f2937;
+    color: #d1d5db;
+}
+
+.empty-box,
+.empty-detail {
+    color: var(--muted);
+    padding: 30px;
+    text-align: center;
+}
+
+@media (max-width: 900px) {
+    .inbox-layout {
+        grid-template-columns: 1fr;
+    }
+
+    .email-list,
+    .email-detail {
+        max-height: none;
+    }
+
+    .page-header,
+    .reply-header {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+
+    .reply-actions {
+        flex-direction: column;
+    }
+
+    .btn {
+        width: 100%;
+        text-align: center;
+    }
+}
+</style>
+
+{% endblock %}

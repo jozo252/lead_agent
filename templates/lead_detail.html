@@ -271,8 +271,8 @@
        <section class="card" style="margin-top: 24px;">
     <h2>Odpovede</h2>
 
-    {% if replies %}
-        {% for reply in replies %}
+    {% if email_replies %}
+        {% for reply in email_replies %}
             <div class="card" style="margin-bottom: 12px; background: #020617;">
                 <strong>{{ reply.subject or "Bez predmetu" }}</strong>
 

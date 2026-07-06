@@ -12,6 +12,8 @@ from email_finder import find_email_on_website
 from datetime import datetime
 import requests
 import os
+from email.utils import parseaddr
+from sqlalchemy import func
 
 
 main_bp = Blueprint("main", __name__)
@@ -392,10 +394,11 @@ def lead_detail(lead_id):
         .order_by(LeadActivity.created_at.desc())\
         .all()
     
-    email_replies = EmailReply.query.filter_by(lead_id=lead.id)\
+    email_replies = EmailReply.query\
         .order_by(EmailReply.created_at.desc())\
         .all()
-
+    print(f"Email replies for lead {lead.id}: {[reply.id for reply in email_replies]}")
+    
     return render_template(
         "lead_detail.html",
         lead=lead,
@@ -657,8 +660,12 @@ def find_missing_emails():
 def postmark_inbound():
     data = request.get_json(silent=True) or {}
 
-    from_email = data.get("From")
-    from_name = data.get("FromName")
+    raw_from = data.get("From") or ""
+    parsed_name, parsed_email = parseaddr(raw_from)
+
+    from_email = (parsed_email or raw_from).strip().lower()
+    from_name = data.get("FromName") or parsed_name
+
     subject = data.get("Subject")
     text_body = data.get("StrippedTextReply") or data.get("TextBody")
     html_body = data.get("HtmlBody")
@@ -669,8 +676,12 @@ def postmark_inbound():
 
     if from_email:
         lead = Lead.query.filter(
-            Lead.email.ilike(from_email.strip())
+            func.lower(func.trim(Lead.email)) == from_email
         ).first()
+
+    print("POSTMARK FROM RAW:", raw_from)
+    print("POSTMARK FROM EMAIL:", from_email)
+    print("FOUND LEAD:", lead.id if lead else None)
 
     reply = EmailReply(
         lead_id=lead.id if lead else None,

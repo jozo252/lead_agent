@@ -281,7 +281,11 @@
                 </div>
 
                 <div class="muted" style="margin-top: 6px;">
-                    {{ reply.received_at.strftime('%d.%m.%Y %H:%M') }}
+                    {% if reply.received_at %}
+                        {{ reply.received_at.strftime('%d.%m.%Y %H:%M') }}
+                    {% else %}
+                        Bez dátumu
+                    {% endif %}
                 </div>
 
                 <div style="margin-top: 12px; white-space: pre-wrap;">

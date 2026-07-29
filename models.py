@@ -1,6 +1,10 @@
-from datetime import datetime
+from datetime import datetime, timezone
+
+from sqlalchemy import UniqueConstraint
 from extensions import db
 
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 class Lead(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -74,3 +78,307 @@ class EmailReply(db.Model):
     received_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     lead = db.relationship("Lead", backref="email_replies")
+
+
+
+class Company(db.Model):
+    __tablename__ = "companies"
+    __table_args__ = (
+    db.UniqueConstraint(
+        "company_id",
+        "contact_type",
+        "value",
+        name="uq_company_contact_type_value",
+    ),
+)
+
+    id = db.Column(db.Integer, primary_key=True)
+
+    ico = db.Column(
+        db.String(20),
+        unique=True,
+        nullable=True,
+        index=True,
+    )
+
+    official_name = db.Column(db.String(500), nullable=True, index=True)
+    status = db.Column(db.String(100), nullable=True)
+    legal_form = db.Column(db.String(255), nullable=True)
+
+    municipality = db.Column(db.String(255), nullable=True, index=True)
+    postal_code = db.Column(db.String(20), nullable=True)
+    street = db.Column(db.String(500), nullable=True)
+    country = db.Column(db.String(100), nullable=True)
+
+    established_on = db.Column(db.Date, nullable=True)
+    terminated_on = db.Column(db.Date, nullable=True)
+
+    rpo_actualized_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=True,
+    )
+
+    rpo_updated_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=True,
+    )
+
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=utcnow,
+    )
+
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=utcnow,
+        onupdate=utcnow,
+    )
+    activities = db.relationship(
+        "CompanyActivity",
+        back_populates="company",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+)
+    sources = db.relationship(
+        "CompanySource",
+        back_populates="company",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+    contacts = db.relationship(
+        "CompanyContact",
+        back_populates="company",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+    def __repr__(self) -> str:
+        return f"<Company ico={self.ico!r} official_name={self.official_name!r}>"
+
+class CompanySource(db.Model):
+    """
+    Pôvodný záznam z externého zdroja.
+
+    Raw JSON je dôležitý, pretože štruktúra RPO2 sa môže meniť
+    a neskôr z neho môžeme vytiahnuť ďalšie údaje.
+    """
+
+    __tablename__ = "company_sources"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "source_type",
+            "external_id",
+            name="uq_company_source_external_record",
+        ),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+
+    company_id = db.Column(
+        db.Integer,
+        db.ForeignKey("companies.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    source_type = db.Column(
+        db.String(50),
+        nullable=False,
+        default="rpo2",
+        index=True,
+    )
+
+    external_id = db.Column(db.String(100), nullable=False, index=True)
+
+    resource_url = db.Column(db.Text, nullable=True)
+
+    raw_data = db.Column(db.JSON, nullable=False)
+
+    source_updated_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=True,
+    )
+
+    fetched_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=utcnow,
+    )
+
+    company = db.relationship(
+        "Company",
+        back_populates="sources",
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<CompanySource source={self.source_type!r} "
+            f"external_id={self.external_id!r}>"
+        )
+
+
+class SyncState(db.Model):
+    """
+    Stav jedného synchronizačného procesu.
+
+    next_url umožňuje pokračovať z konkrétnej stránky.
+    sync_started_at zostáva rovnaký počas celého jedného behu.
+    """
+
+    __tablename__ = "sync_states"
+
+    id = db.Column(db.Integer, primary_key=True)
+
+    name = db.Column(db.String(100), unique=True, nullable=False)
+
+    status = db.Column(
+        db.String(30),
+        nullable=False,
+        default="idle",
+    )
+
+    # Posledná úplne dokončená synchronizácia.
+    last_successful_sync_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=True,
+    )
+
+    # Čas, ktorý sme použili ako parameter since.
+    sync_started_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=True,
+    )
+
+    # Presná URL ďalšej stránky.
+    next_url = db.Column(db.Text, nullable=True)
+
+    processed_records = db.Column(
+        db.Integer,
+        nullable=False,
+        default=0,
+    )
+
+    last_error = db.Column(db.Text, nullable=True)
+
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=utcnow,
+    )
+
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=utcnow,
+        onupdate=utcnow,
+    )
+
+    def __repr__(self) -> str:
+        return f"<SyncState name={self.name!r} status={self.status!r}>"
+    
+
+
+class CompanyActivity(db.Model):
+    __tablename__ = "company_activities"
+
+    id = db.Column(db.Integer, primary_key=True)
+
+    company_id = db.Column(
+        db.Integer,
+        db.ForeignKey("companies.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    description = db.Column(
+        db.Text,
+        nullable=False,
+    )
+
+    valid_from = db.Column(
+        db.Date,
+        nullable=True,
+    )
+
+    valid_to = db.Column(
+        db.Date,
+        nullable=True,
+    )
+
+    company = db.relationship(
+        "Company",
+        back_populates="activities",
+    )
+
+
+class CompanyContact(db.Model):
+    __tablename__ = "company_contacts"
+
+    id = db.Column(db.Integer, primary_key=True)
+
+    company_id = db.Column(
+        db.Integer,
+        db.ForeignKey("companies.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    contact_type=db.Column(
+        db.String(30),
+        nullable=False,
+        index=True
+    )
+    value=db.Column(
+        db.String(500),
+        nullable=False,
+    )
+    label=db.Column(
+        db.String(100),
+        nullable=True,
+    )
+    source_type=db.Column(
+        db.String(50),
+        nullable=False,
+    )
+    source_url=db.Column(
+        db.Text,
+        nullable=True,
+    )
+
+
+    is_verified = db.Column(
+        db.Boolean,
+        nullable=False,
+        default=False,
+    )
+
+    is_primary = db.Column(
+        db.Boolean,
+        nullable=False,
+        default=False,
+    )
+
+    last_verified_at = db.Column(
+        db.DateTime,
+        nullable=True,
+    )
+
+    created_at = db.Column(
+        db.DateTime,
+        nullable=False,
+        default=utcnow,
+    )
+
+    updated_at = db.Column(
+        db.DateTime,
+        nullable=False,
+        default=utcnow,
+        onupdate=utcnow,
+    )
+
+    company = db.relationship(
+        "Company",
+        back_populates="contacts",
+    )

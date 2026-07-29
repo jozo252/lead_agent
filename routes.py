@@ -394,7 +394,7 @@ def lead_detail(lead_id):
         .order_by(LeadActivity.created_at.desc())\
         .all()
     
-    email_replies = EmailReply.query\
+    email_replies = EmailReply.query.filter_by(lead_id=lead.id)\
         .order_by(EmailReply.created_at.desc())\
         .all()
     print(f"Email replies for lead {lead.id}: {[reply.id for reply in email_replies]}")

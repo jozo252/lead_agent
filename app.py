@@ -3,6 +3,7 @@ import os
 from dotenv import load_dotenv
 
 from extensions import db, migrate, csrf, mail
+from commands.rpo import sync_rpo_command
 
 
 def create_app():
@@ -28,6 +29,7 @@ def create_app():
     migrate.init_app(app, db)
     csrf.init_app(app)
     mail.init_app(app)
+    app.cli.add_command(sync_rpo_command)
     from routes import main_bp
     app.register_blueprint(main_bp)
 

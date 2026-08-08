@@ -104,6 +104,13 @@
             white-space: nowrap;
         }
 
+        .nav-links {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            font-size: 13px;
+        }
+
         .container {
             max-width: 1500px;
             margin: 0 auto;
@@ -518,7 +525,11 @@
             <div class="brand">
                 <h1>LeadHunter CRM</h1>
                 <span>Leady → oslovenie → zákazka</span>
-                <a href="{{ url_for('main.inbox') }}">Prijaté emaily</a>
+                <div class="nav-links">
+                    <a href="{{ url_for('main.home') }}">Leady</a>
+                    <a href="{{ url_for('main.companies') }}">Firmy z RPO</a>
+                    <a href="{{ url_for('main.inbox') }}">Prijaté emaily</a>
+                </div>
             </div>
 
             <div class="nav-hint">

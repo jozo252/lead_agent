@@ -3,7 +3,7 @@ import os
 from dotenv import load_dotenv
 
 from extensions import db, migrate, csrf, mail
-from commands.rpo import sync_rpo_command
+from commands.rpo import enrich_contacts_command, sync_rpo_command
 
 
 def create_app():
@@ -24,12 +24,14 @@ def create_app():
     app.config["IMAP_SERVER"] = os.environ.get("IMAP_SERVER")
     app.config["IMAP_USERNAME"] = os.environ.get("IMAP_USERNAME")
     app.config["IMAP_PASSWORD"] = os.environ.get("IMAP_PASSWORD")
-
+    app.config["BRAVE_API_KEY"] = os.environ.get("BRAVE_API_KEY")
+    app.config["OPENAI_API_KEY"] = os.environ.get("OPENAI_API_KEY")
     db.init_app(app)
     migrate.init_app(app, db)
     csrf.init_app(app)
     mail.init_app(app)
     app.cli.add_command(sync_rpo_command)
+    app.cli.add_command(enrich_contacts_command)
     from routes import main_bp
     app.register_blueprint(main_bp)
 

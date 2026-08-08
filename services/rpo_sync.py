@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
 import logging
 import time
 from datetime import date, datetime, timezone
+from difflib import SequenceMatcher
+from html import unescape
 from typing import Any
 from urllib.parse import urljoin
 
@@ -12,13 +15,15 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from extensions import db
-from models import Company, CompanyActivity, CompanySource, SyncState
+from models import Company, CompanyActivity, CompanyContact, CompanySource, SyncState
 import os
 from dotenv import load_dotenv
 from urllib.parse import urlparse
-
+import unicodedata
+import re
+from pprint import pprint
 logger = logging.getLogger(__name__)
-
+load_dotenv()
 
 RPO_BASE_URL = "https://datahub.ekosystem.slovensko.digital"
 RPO_SYNC_URL = (
@@ -553,6 +558,22 @@ IGNORED_RPO_REGISTERS = {
 }
 
 
+SRO_LEGAL_FORMS = {
+    "spoločnosť s ručením obmedzeným",
+    "s.r.o.",
+    "s. r. o.",
+}
+
+
+def is_sro_legal_form(legal_form: Any) -> bool:
+    """Vráti True iba pre právnu formu spoločnosti s ručením obmedzeným."""
+    if not isinstance(legal_form, str):
+        return False
+
+    normalized = " ".join(legal_form.casefold().split())
+    return normalized in SRO_LEGAL_FORMS
+
+
 def should_skip_record(normalized):
     ico = normalized.get("ico")
     official_name = normalized.get("official_name")
@@ -566,6 +587,9 @@ def should_skip_rpo_record(normalized, source_register=None):
     #normalized = normalized_rpo_fields(record)
     
     if source_register in IGNORED_RPO_REGISTERS:
+        return True
+
+    if not is_sro_legal_form(normalized.get("legal_form")):
         return True
 
     return should_skip_record(normalized)
@@ -707,6 +731,7 @@ def ensure_company_source(
     return CompanySource(
         company=company,
         source_type="rpo2",
+        source_id=str(record.get("id")),
         external_id=str(record.get("id")),
         raw_data=record,
     )
@@ -838,30 +863,50 @@ def build_company_search_queries(company):
 
 
 def normalize_search_results(raw_data):
-    if not isinstance(raw_data,dict):
-        raw_data={}
-    web=raw_data.get("web")
-    if not isinstance(web,dict):
-        web={}
-    results=web.get("results")
+    if not isinstance(raw_data, dict):
+        return []
+
+    web = raw_data.get("web")
+
+    if not isinstance(web, dict):
+        return []
+
+    results = web.get("results")
+
+    if not isinstance(results, list):
+        return []
+
     normalized = []
 
     for result in results:
         if not isinstance(result, dict):
             continue
 
-        url = result.get("url")
+        location = result.get("location")
+        if not isinstance(location, dict):
+            location = {}
 
-        if not url:
-            continue
+        contact = location.get("contact")
+        if not isinstance(contact, dict):
+            contact = {}
 
-        normalized_result = {
+        extra_snippets = result.get("extra_snippets")
+        if not isinstance(extra_snippets, list):
+            extra_snippets = []
+
+        normalized.append({
             "title": result.get("title"),
-            "url": url,
+            "url": result.get("url"),
             "description": result.get("description"),
-        }
+            "extra_snippets": extra_snippets,
 
-        normalized.append(normalized_result)
+            "location_url": location.get("url"),
+            "location_email": contact.get("email"),
+            "location_phone": contact.get("telephone"),
+
+            "type": result.get("type"),
+            "subtype": result.get("subtype"),
+        })
 
     return normalized
 
@@ -922,6 +967,72 @@ BLOCKED_DOMAINS = {
     "google.com",
 }
 
+SOCIAL_DOMAINS = {
+    "facebook.com",
+    "instagram.com",
+    "linkedin.com",
+    "tiktok.com",
+}
+
+SEARCH_EXCLUDED_DOMAINS = {
+    "google.com",
+    "youtube.com",
+}
+
+CONTACT_SCORE_ICO_MATCH = 50
+CONTACT_SCORE_NAME_MATCH = 25
+CONTACT_SCORE_LOCATION_MATCH = 15
+CONTACT_SCORE_EMAIL_DOMAIN_MATCH = 15
+CONTACT_SCORE_PHONE_CONFIRMATION = 10
+CONTACT_PENALTY_DIRECTORY = 50
+CONTACT_PENALTY_UNRELATED = 30
+CONTACT_PENALTY_NAME_CONFLICT = 25
+CONTACT_PENALTY_SOCIAL_ONLY = 20
+VALIDATED_WEBSITE_MINIMUM_CONFIDENCE = 85
+UNVERIFIED_CONTACT_MINIMUM_CONFIDENCE = 40
+
+DIRECTORY_DOMAINS = {
+    "zoznam.sk",
+    "zlatestranky.sk",
+    "kompass.com",
+    "dnb.com",
+    "foaf.sk",
+    "edb.eu",
+    "register.peniaze.sk",
+    "prever.to",
+    "registeruz.sk",
+    "valida.sk",
+    "transparex.sk",
+    "indexpodnikatela.sk",
+    "info-bratislava.sk",
+    "tvojlekar.sk",
+    "e-vuc.sk",
+    "zverejnovanie.bratislava.sk",
+    "ifirmy.sk",
+    "uvostat.sk",
+    "skmapy.sk",
+    "register.finance.sk",
+    "zzz.sk",
+    "info-nitra.sk",
+    "adresarfiriem.sk",
+    "spravodajstvo.sk",
+    "b2bhint.com",
+    "orlystavebnictva.eu",
+    "greatregister.org",
+    "stavbahub.sk",
+    "autocontact.sk",
+    "topdoktor.sk",
+    "foursquare.com",
+    "nehnutelnosti.sk",
+    "tripadvisor.com",
+    "superobed.sk",
+    "restauracie.sme.sk",
+    "menumenu.sk",
+    "ekariera.sk",
+    "crz.minedu.sk",
+    "rejstrik.penize.cz",
+}
+
 
 def extract_domain(url):
     if not isinstance(url, str):
@@ -968,6 +1079,46 @@ def is_blocked_domain(url):
             return True
 
     return False
+
+
+def is_social_domain(url):
+    domain = extract_domain(url)
+
+    if not domain:
+        return False
+
+    return any(
+        domain == social_domain or domain.endswith(f".{social_domain}")
+        for social_domain in SOCIAL_DOMAINS
+    )
+
+
+def is_search_excluded_domain(url):
+    domain = extract_domain(url)
+
+    if not domain:
+        return True
+
+    return any(
+        domain == excluded_domain or domain.endswith(f".{excluded_domain}")
+        for excluded_domain in SEARCH_EXCLUDED_DOMAINS
+    )
+
+
+def is_directory_domain(url):
+    domain = extract_domain(url)
+
+    if not domain:
+        return True
+
+    for directory_domain in DIRECTORY_DOMAINS:
+        if domain == directory_domain:
+            return True
+
+        if domain.endswith(f".{directory_domain}"):
+            return True
+
+    return False
 def filter_search_results(results):
     if not isinstance(results, list):
         return []
@@ -980,7 +1131,7 @@ def filter_search_results(results):
 
         url = result.get("url")
 
-        if is_blocked_domain(url):
+        if is_search_excluded_domain(url):
             continue
 
         filtered_results.append(result)
@@ -1003,9 +1154,9 @@ def find_company_website(company):
         results = search_company_web(query)
         all_results.extend(results)
 
-    return duplicate_search_results(all_results)
+    return deduplicate_search_results(all_results)
 
-def duplicate_search_results(results):
+def deduplicate_search_results(results):
     if not isinstance(results, list):
         return []
 
@@ -1026,6 +1177,1214 @@ def duplicate_search_results(results):
         unique_results.append(result)
 
     return unique_results
+
+def normalize_for_domain(value):
+    if not isinstance(value,str):
+        value=""
+    value=unicodedata.normalize("NFKD",value)
+    value="".join(
+        char for char in value
+        if not unicodedata.combining(char)
+
+    )
+    value=value.lower()
+    value = re.sub(r"[^a-z0-9]", "", value)
+    return value 
+
+def is_value_in_text(text, value):
+    normalized_text = normalize_for_domain(text)
+    normalized_value = normalize_for_domain(value)
+
+    if not normalized_value:
+        return False
+
+    return normalized_value in normalized_text
+
+
+
+
+#+40 ak názov firmy je v doméne
+#+20 ak názov firmy je v title
+#+10 ak mesto je v description
+#+5 ak mesto je v title
+def score_search_result(company, result):
+    """Ohodnotí zhodu názvu a miesta firmy so search výsledkom."""
+    if not isinstance(result, dict):
+        return 0
+
+    title = result.get("title") or ""
+    description = result.get("description") or ""
+    official_name = getattr(company, "official_name", None)
+    municipality = getattr(company, "municipality", None)
+    street = getattr(company, "street", None)
+    company_name = strip_legal_suffix(official_name) if official_name else ""
+    normalized_name = normalize_for_domain(company_name)
+    normalized_title = normalize_for_domain(title)
+    domain = extract_domain(result.get("url"))
+    normalized_domain = normalize_for_domain(
+        domain.split(".")[0] if domain else ""
+    )
+    score = 0
+
+    name_similarity = 0.0
+    if normalized_name and normalized_title:
+        name_similarity = SequenceMatcher(
+            None,
+            normalized_name,
+            normalized_title,
+        ).ratio()
+
+    if normalized_name and (
+        normalized_name in normalized_title
+        or normalized_name in normalized_domain
+        or name_similarity >= 0.8
+    ):
+        score += CONTACT_SCORE_NAME_MATCH
+    elif "sro" in normalized_title and normalized_name:
+        score -= CONTACT_PENALTY_NAME_CONFLICT
+
+    if (
+        is_value_in_text(title, municipality)
+        or is_value_in_text(description, municipality)
+        or is_value_in_text(title, street)
+        or is_value_in_text(description, street)
+    ):
+        score += CONTACT_SCORE_LOCATION_MATCH
+
+    return score
+
+
+def build_derived_website_url(company):
+    """Vytvorí možnú .sk doménu z obchodného názvu firmy."""
+    official_name = getattr(company, "official_name", None)
+    company_name = strip_legal_suffix(official_name) if official_name else ""
+    domain_label = normalize_for_domain(company_name)
+
+    if len(domain_label) < 3:
+        return None
+
+    return f"https://{domain_label}.sk"
+
+
+def extract_visible_page_text(html_content):
+    """Odstráni HTML značky a vráti text vhodný na overenie firmy."""
+    if not isinstance(html_content, str):
+        return ""
+
+    text = re.sub(
+        r"<(script|style)[^>]*>.*?</\1>",
+        " ",
+        html_content,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    text = re.sub(r"<[^>]+>", " ", text)
+    return " ".join(unescape(text).split())
+
+
+def fetch_validated_website_result(company, candidate_url):
+    """Načíta web a potvrdí, že patrí firme podľa IČO alebo názvu a domény."""
+    if (
+        not candidate_url
+        or is_blocked_domain(candidate_url)
+        or is_directory_domain(candidate_url)
+        or is_social_domain(candidate_url)
+    ):
+        return None
+
+    try:
+        response = requests.get(
+            candidate_url,
+            timeout=(5, 15),
+            headers={"User-Agent": "LeadAgent-ContactLookup/1.0"},
+        )
+    except requests.RequestException:
+        return None
+
+    if not response.ok:
+        return None
+
+    visible_text = extract_visible_page_text(response.text)
+    company_ico = str(getattr(company, "ico", "") or "").strip()
+    official_name = getattr(company, "official_name", None)
+    company_name = strip_legal_suffix(official_name) if official_name else ""
+    normalized_name = normalize_for_domain(company_name)
+    normalized_text = normalize_for_domain(visible_text)
+    name_matches = normalized_name and normalized_name in normalized_text
+    ico_matches = company_ico and company_ico in visible_text
+    domain = extract_domain(response.url)
+    domain_label = domain.split(".", 1)[0] if domain else ""
+    domain_matches = normalized_name and normalized_name == domain_label
+    if not ico_matches and not (name_matches and domain_matches):
+        return None
+
+    title_match = re.search(
+        r"<title[^>]*>(.*?)</title>",
+        response.text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    title = unescape(title_match.group(1)).strip() if title_match else ""
+
+    return {
+        "title": title,
+        "url": response.url,
+        "description": visible_text[:20000],
+        "extra_snippets": [],
+        "website_validated": True,
+        "website_ico_validated": bool(ico_matches),
+    }
+
+
+def fetch_derived_website_result(company):
+    """Overí odvodenú .sk doménu a vráti ju ako search výsledok."""
+    return fetch_validated_website_result(
+        company,
+        build_derived_website_url(company),
+    )
+
+
+def validate_company_website_results(company, results, maximum_checks=5):
+    """Obsahovo overí najrelevantnejšie Brave výsledky pred výberom kontaktov."""
+    if not isinstance(results, list):
+        return []
+
+    validated_results = []
+    checks_left = maximum_checks
+
+    for result in results:
+        if not isinstance(result, dict):
+            continue
+
+        if result.get("website_validated"):
+            validated_results.append(result)
+            continue
+
+        result_url = result.get("url")
+        should_check = (
+            checks_left > 0
+            and not is_blocked_domain(result_url)
+            and not is_directory_domain(result_url)
+            and not is_social_domain(result_url)
+            and score_search_result(company, result) >= CONTACT_SCORE_NAME_MATCH
+        )
+
+        if not should_check:
+            validated_results.append(result)
+            continue
+
+        checks_left -= 1
+        validated_result = fetch_validated_website_result(company, result_url)
+        validated_results.append(validated_result or result)
+
+    return validated_results
+
+
+def has_trusted_website_result(company, results):
+    """Určí, či už bol obsahom potvrdený priamy web firmy."""
+    return any(
+        isinstance(result, dict)
+        and result.get("website_validated")
+        for result in results
+    )
+
+
+def fetch_company_contact_results(company, delay_seconds=0.5):
+    """Vyhľadá a obsahovo overí Brave výsledky pre jednu uloženú firmu."""
+    results = []
+    queries = build_company_search_queries(company)
+
+    for index, query in enumerate(queries):
+        raw_results = fetch_search_results(query)
+        results.extend(normalize_search_results(raw_results))
+
+        if delay_seconds and index < len(queries) - 1:
+            time.sleep(delay_seconds)
+
+    results = filter_search_results(deduplicate_search_results(results))
+    results = validate_company_website_results(company, results)
+
+    if not has_trusted_website_result(company, results):
+        derived_result = fetch_derived_website_result(company)
+
+        if derived_result:
+            results.append(derived_result)
+
+    return results
+
+
+def score_contact_candidate(company, candidate, phone_sources):
+    """Vráti confidence a rozpis bodov pre jeden zdroj kontaktov."""
+    score = score_search_result(company, candidate["result"])
+    score_breakdown = []
+    result = candidate["result"]
+    source_url = candidate["source_url"]
+    source_domain = candidate["source_domain"]
+
+    if candidate["ico_match"]:
+        score += CONTACT_SCORE_ICO_MATCH
+        score_breakdown.append(f"ico_match:+{CONTACT_SCORE_ICO_MATCH}")
+
+    identity_score = score_search_result(company, result)
+    if identity_score >= CONTACT_SCORE_NAME_MATCH:
+        score_breakdown.append(
+            f"company_name_match:+{CONTACT_SCORE_NAME_MATCH}"
+        )
+    elif identity_score <= -CONTACT_PENALTY_NAME_CONFLICT:
+        score_breakdown.append(
+            f"company_name_conflict:-{CONTACT_PENALTY_NAME_CONFLICT}"
+        )
+
+    if (
+        identity_score % CONTACT_SCORE_NAME_MATCH
+        >= CONTACT_SCORE_LOCATION_MATCH
+        or identity_score >= (
+            CONTACT_SCORE_NAME_MATCH + CONTACT_SCORE_LOCATION_MATCH
+        )
+    ):
+        score_breakdown.append(
+            f"location_or_address_match:+{CONTACT_SCORE_LOCATION_MATCH}"
+        )
+
+    website_domains = set(candidate["website_domains"])
+    if source_domain:
+        website_domains.add(source_domain)
+
+    if any(
+        email.rsplit("@", 1)[-1] in website_domains
+        for email in candidate["emails"]
+        if "@" in email
+    ):
+        score += CONTACT_SCORE_EMAIL_DOMAIN_MATCH
+        score_breakdown.append(
+            f"email_domain_matches_website:+{CONTACT_SCORE_EMAIL_DOMAIN_MATCH}"
+        )
+
+    if any(
+        len(phone_sources.get(normalize_phone(phone), set())) > 1
+        for phone in candidate["phones"]
+        if normalize_phone(phone)
+    ):
+        score += CONTACT_SCORE_PHONE_CONFIRMATION
+        score_breakdown.append(
+            f"phone_in_multiple_sources:+{CONTACT_SCORE_PHONE_CONFIRMATION}"
+        )
+
+    if is_directory_domain(source_url):
+        score -= CONTACT_PENALTY_DIRECTORY
+        score_breakdown.append(
+            f"directory_or_register:-{CONTACT_PENALTY_DIRECTORY}"
+        )
+    elif (
+        not candidate["ico_match"]
+        and identity_score == 0
+        and not is_social_domain(source_url)
+    ):
+        score -= CONTACT_PENALTY_UNRELATED
+        score_breakdown.append(
+            f"unrelated_domain:-{CONTACT_PENALTY_UNRELATED}"
+        )
+
+    if (
+        is_social_domain(source_url)
+        and not candidate["ico_match"]
+        and identity_score < 40
+    ):
+        score -= CONTACT_PENALTY_SOCIAL_ONLY
+        score_breakdown.append(
+            f"social_without_additional_evidence:-{CONTACT_PENALTY_SOCIAL_ONLY}"
+        )
+
+    return max(0, min(score, 100)), score_breakdown
+    
+def choose_best_website(company,results,minimum_score=40):
+    if not isinstance(results,list):
+        return None
+    best_result = None
+    best_score=0
+
+    for result in results:
+        score=score_search_result(company,result)
+        if score > best_score:
+            best_result=result
+    if not best_result or best_score < minimum_score:
+        return None 
+    return {
+        "title": best_result.get("title"),
+        "url": best_result.get("url"),
+        "description": best_result.get("description"),
+        "domain": extract_domain(best_result.get("url")),
+        "score": best_score,
+    }
+
+def find_company_website(company):
+    queries = build_company_search_queries(company)
+    all_results = []
+
+    for query in queries:
+        results = search_company_web(query)
+        all_results.extend(results)
+
+    unique_results = deduplicate_search_results(all_results)
+
+    return choose_best_website(company, unique_results)
+
+def debug_search_results(response):
+    results = response.get("web", {}).get("results", [])
+    print(json.dumps(response, indent=2, ensure_ascii=False))
+
+    print(f"Počet výsledkov: {len(results)}")
+
+    for i, result in enumerate(results, start=1):
+        print(f"\n=== {i} ===")
+        print("Title:", result.get("title"))
+        print("URL:", result.get("url"))
+        print("Description:", result.get("description"))
+
+
+
+{
+    "website": "http://www.elektroinstalaciepoprad.sk",
+    "emails": [
+        "elektroinstalaciepoprad@gmail.com",
+        "rudolfgorel@gmail.com"
+    ],
+    "phones": [
+        "0903 628 912",
+        "0948 132 867"
+    ],
+    "ico": "48061999",
+    "source_url": "https://www.zoznam.sk/firma/3172905/Elektroinstalacie-Poprad-Poprad",
+    "source_type": "search_result_description"
+}
+
+
+#-----------------------------------------------------------------Dokoncit-------------------------------
+def extract_contacts_from_search_result(result):
+    if not isinstance(result, dict):
+        return {
+            "websites": [],
+            "emails": [],
+            "phones": [],
+            "icos": [],
+        }
+
+    parts = [
+        result.get("title"),
+        result.get("description"),
+    ]
+
+    extra_snippets = result.get("extra_snippets")
+
+    if isinstance(extra_snippets, list):
+        parts.extend(extra_snippets)
+
+    text = " ".join(
+        str(part).strip()
+        for part in parts
+        if part
+    )
+   
+
+
+    websites = extract_websites(text)
+    emails = extract_emails(text)
+    phones = extract_phones(text)
+    icos = extract_icos(text)
+
+    location_url = result.get("location_url")
+    location_email = result.get("location_email")
+    location_phone = result.get("location_phone")
+
+    if location_url:
+        websites.append(location_url)
+
+    if location_email:
+        emails.append(location_email.lower().strip())
+
+    if location_phone:
+        phone = normalize_phone(location_phone)
+
+        if phone:
+            phones.append(phone)
+
+    return {
+        "websites": list(dict.fromkeys(websites)),
+        "emails": list(dict.fromkeys(emails)),
+        "phones": list(dict.fromkeys(phones)),
+        "icos": list(dict.fromkeys(icos)),
+    }
+
+#--------------------------------------------------Dokoncit----------------------------
+
+def extract_emails(text):
+    if not isinstance(text,str):
+        return []
+    pattern = (
+        r"[A-Za-z0-9._%+-]+"
+        r"@[A-Za-z0-9.-]+"
+        r"\.[A-Za-z]{2,}"
+    )
+
+    found=re.findall(pattern,text)
+
+    seen=set()
+    result=[]
+    for email in found:
+        email= email.lower().strip()
+        if email in seen:
+            continue
+        seen.add(email)
+        result.append(email)
+    return result
+
+def extract_websites(text):
+    if not isinstance(text, str):
+        return []
+
+    pattern = r"https?://[^\s<>\"']+"
+
+    found = re.findall(pattern, text, flags=re.IGNORECASE)
+
+    seen = set()
+    result = []
+
+    for url in found:
+        url = url.rstrip(".,;:!?)]}").strip()
+
+        if url in seen:
+            continue
+
+        seen.add(url)
+        result.append(url)
+
+    return result
+
+def normalize_phone(phone):
+    if not isinstance(phone, str):
+        return None
+
+    phone = phone.strip()
+
+    has_plus = phone.startswith("+")
+    digits = re.sub(r"\D", "", phone)
+
+    if not digits:
+        return None
+
+    if digits.startswith("00421"):
+        return f"+{digits[2:]}"
+
+    if digits.startswith("421"):
+        return f"+{digits}"
+
+    if digits.startswith("0") and len(digits) in (9, 10):
+        return f"+421{digits[1:]}"
+
+    return f"+{digits}" if has_plus else digits
+
+def extract_phones(text):
+    if not isinstance(text, str):
+        return []
+
+    pattern = (
+        r"(?<!\d)"
+        r"(?:\+421|00421|0)"
+        r"(?:[\s\-()]?\d){8,9}"
+        r"(?!\d)"
+    )
+
+    found = re.findall(pattern, text)
+
+    seen = set()
+    result = []
+
+    for phone in found:
+        phone = normalize_phone(phone)
+
+        if not phone or phone in seen:
+            continue
+
+        seen.add(phone)
+        result.append(phone)
+
+    return result
+def extract_icos(text):
+    if not isinstance(text, str):
+        return []
+
+    pattern = r"\bIČO\s*:?\s*(\d{8})\b"
+
+    found = re.findall(
+        pattern,
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    return list(dict.fromkeys(found))
+
+
+def choose_verified_website(company, results):
+    for result in results:
+        extracted = extract_contacts_from_search_result(result)
+
+        if extracted["ico"] != company.ico:
+            continue
+
+        domain = extract_domain(result.get("url"))
+
+        if not domain:
+            continue
+
+        if is_blocked_domain(result.get("url")):
+            continue
+
+        return {
+            "domain": domain,
+            "url": f"https://{domain}",
+            "source_url": result.get("url"),
+            "verification_method": "ico_match",
+        }
+
+    return None
+
+
+def aggregate_company_contacts(company, results):
+    if not isinstance(results, list):
+        return {
+            "verified_domains": [],
+            "websites": [],
+            "emails": [],
+            "phones": [],
+            "evidence": [],
+            "possible_contacts": {
+                "websites": [],
+                "emails": [],
+                "phones": [],
+            },
+        }
+
+    company_ico = str(company.ico).strip() if company.ico else None
+    candidates = []
+
+    for result in results:
+        if not isinstance(result, dict):
+            continue
+
+        extracted = extract_contacts_from_search_result(result)
+
+        source_url = result.get("url")
+        source_domain = extract_domain(source_url)
+
+        extracted_icos = extracted.get("icos", [])
+        websites = extracted.get("websites", [])
+        emails = extracted.get("emails", [])
+        phones = extracted.get("phones", [])
+
+        ico_match = bool(
+            company_ico
+            and company_ico in extracted_icos
+        )
+
+        website_domains = []
+
+        for website in websites:
+            domain = extract_domain(website)
+
+            if (
+                domain
+                and not is_blocked_domain(website)
+                and not is_directory_domain(website)
+            ):
+                website_domains.append(domain)
+
+        website_domains = list(dict.fromkeys(website_domains))
+
+        candidates.append({
+            "result": result,
+            "source_url": source_url,
+            "source_domain": source_domain,
+            "website_domains": website_domains,
+            "websites": websites,
+            "emails": emails,
+            "phones": phones,
+            "icos": extracted_icos,
+            "ico_match": ico_match,
+            "website_validated": bool(result.get("website_validated")),
+            "website_ico_validated": bool(result.get("website_ico_validated")),
+        })
+
+    phone_sources = {}
+
+    for candidate in candidates:
+        source_key = candidate["source_domain"] or candidate["source_url"]
+
+        if not source_key:
+            continue
+
+        for phone in candidate["phones"]:
+            normalized_phone = normalize_phone(phone)
+
+            if normalized_phone:
+                phone_sources.setdefault(normalized_phone, set()).add(source_key)
+
+    for candidate in candidates:
+        source_score, score_breakdown = score_contact_candidate(
+            company,
+            candidate,
+            phone_sources,
+        )
+        source_url = candidate["source_url"]
+        candidate["source_score"] = source_score
+        candidate["score_breakdown"] = score_breakdown
+        candidate["source_is_company_website"] = bool(
+            candidate["source_domain"]
+            and source_url
+            and not is_blocked_domain(source_url)
+            and not is_directory_domain(source_url)
+            and candidate["website_validated"]
+        )
+        candidate["social_profile_match"] = bool(
+            is_social_domain(source_url)
+            and source_score >= 40
+        )
+
+    verified_domains = set()
+
+    for candidate in candidates:
+        if (
+            candidate["ico_match"]
+            and not is_directory_domain(candidate["source_url"])
+        ):
+            verified_domains.update(candidate["website_domains"])
+
+        if candidate["source_is_company_website"]:
+            verified_domains.add(candidate["source_domain"])
+
+    websites = []
+    emails = []
+    phones = []
+    evidence = []
+    possible_contacts = {
+        "websites": [],
+        "emails": [],
+        "phones": [],
+    }
+
+    seen_websites = set()
+    seen_emails = set()
+    seen_phones = set()
+    seen_possible_websites = set()
+    seen_possible_emails = set()
+    seen_possible_phones = set()
+
+    for candidate in candidates:
+        matching_domains = (
+            set(candidate["website_domains"])
+            & verified_domains
+        )
+        source_domain_verified = (
+            candidate["source_domain"] in verified_domains
+        )
+
+        belongs_to_company = candidate["source_is_company_website"]
+
+        if not belongs_to_company:
+            if (
+                candidate["ico_match"]
+                and candidate["source_score"]
+                >= UNVERIFIED_CONTACT_MINIMUM_CONFIDENCE
+            ):
+                reason = "ico_match_unverified_source"
+            elif candidate["social_profile_match"]:
+                reason = "social_profile_name_and_municipality_match"
+            elif (
+                candidate["source_score"]
+                >= UNVERIFIED_CONTACT_MINIMUM_CONFIDENCE
+                and not is_blocked_domain(candidate["source_url"])
+            ):
+                reason = "name_location_unverified_source"
+            else:
+                continue
+
+            source_url = candidate["source_url"]
+
+            for website in candidate["websites"]:
+                domain = extract_domain(website)
+
+                if (
+                    not domain
+                    or is_blocked_domain(website)
+                    or is_directory_domain(website)
+                    or website in seen_possible_websites
+                ):
+                    continue
+
+                seen_possible_websites.add(website)
+                possible_contacts["websites"].append({
+                    "value": website.strip(),
+                    "domain": domain,
+                    "source_url": source_url,
+                    "confidence": candidate["source_score"],
+                    "reason": reason,
+                })
+
+            for email in candidate["emails"]:
+                normalized_email = normalize_contact_value("email", email)
+
+                if not normalized_email or normalized_email in seen_possible_emails:
+                    continue
+
+                seen_possible_emails.add(normalized_email)
+                possible_contacts["emails"].append({
+                    "value": normalized_email,
+                    "source_url": source_url,
+                    "confidence": candidate["source_score"],
+                    "reason": reason,
+                })
+
+            for phone in candidate["phones"]:
+                normalized_phone = normalize_phone(phone)
+
+                if not normalized_phone or normalized_phone in seen_possible_phones:
+                    continue
+
+                seen_possible_phones.add(normalized_phone)
+                possible_contacts["phones"].append({
+                    "value": normalized_phone,
+                    "source_url": source_url,
+                    "confidence": candidate["source_score"],
+                    "reason": reason,
+                })
+
+            evidence.append({
+                "source_url": source_url,
+                "ico_match": candidate["ico_match"],
+                "source_score": candidate["source_score"],
+                "score_breakdown": candidate["score_breakdown"],
+                "matching_domains": [],
+                "reason": reason,
+            })
+            continue
+
+        if candidate["website_validated"]:
+            reason = "validated_company_website"
+            base_confidence = max(
+                candidate["source_score"],
+                VALIDATED_WEBSITE_MINIMUM_CONFIDENCE,
+            )
+        elif candidate["ico_match"]:
+            reason = "ico_match"
+            base_confidence = candidate["source_score"]
+        elif source_domain_verified:
+            reason = "verified_source_domain"
+            base_confidence = candidate["source_score"]
+        else:
+            reason = "verified_domain_match"
+            base_confidence = candidate["source_score"]
+
+        source_url = candidate["source_url"]
+
+        if source_domain_verified and source_url:
+            normalized_source_url = source_url.strip()
+
+            if normalized_source_url not in seen_websites:
+                seen_websites.add(normalized_source_url)
+                websites.append({
+                    "value": normalized_source_url,
+                    "domain": candidate["source_domain"],
+                    "source_url": source_url,
+                    "confidence": base_confidence,
+                    "reason": reason,
+                    "ico_validated": candidate["website_ico_validated"],
+                })
+
+        for website in candidate["websites"]:
+            domain = extract_domain(website)
+
+            if not domain or domain not in verified_domains:
+                continue
+
+            normalized_website = website.strip()
+
+            if normalized_website in seen_websites:
+                continue
+
+            seen_websites.add(normalized_website)
+
+            websites.append({
+                "value": normalized_website,
+                "domain": domain,
+                "source_url": source_url,
+                "confidence": base_confidence,
+                "reason": reason,
+                "ico_validated": candidate["website_ico_validated"],
+            })
+
+        for email in candidate["emails"]:
+            normalized_email = normalize_contact_value(
+                "email",
+                email,
+            )
+
+            if not normalized_email:
+                continue
+
+            email_domain = normalized_email.rsplit("@", 1)[-1]
+
+            if not candidate["ico_match"] and email_domain not in verified_domains:
+                continue
+
+            if normalized_email in seen_emails:
+                continue
+
+            seen_emails.add(normalized_email)
+
+            emails.append({
+                "value": normalized_email,
+                "source_url": source_url,
+                "confidence": base_confidence,
+                "reason": reason,
+                "ico_validated": candidate["website_ico_validated"],
+            })
+
+        for phone in candidate["phones"]:
+            if not candidate["ico_match"] and not source_domain_verified:
+                continue
+
+            normalized_phone = normalize_phone(phone)
+
+            if not normalized_phone:
+                continue
+
+            if normalized_phone in seen_phones:
+                continue
+
+            seen_phones.add(normalized_phone)
+
+            phones.append({
+                "value": normalized_phone,
+                "source_url": source_url,
+                "confidence": base_confidence,
+                "reason": reason,
+                "ico_validated": candidate["website_ico_validated"],
+            })
+
+        evidence.append({
+            "source_url": source_url,
+            "ico_match": candidate["ico_match"],
+            "source_score": candidate["source_score"],
+            "score_breakdown": candidate["score_breakdown"],
+            "matching_domains": list(matching_domains),
+            "reason": reason,
+        })
+
+    return {
+        "verified_domains": sorted(verified_domains),
+        "websites": websites,
+        "emails": emails,
+        "phones": phones,
+        "evidence": evidence,
+        "possible_contacts": possible_contacts,
+    }
+
+
+CONTACT_SELECTION_RULES = {
+    "websites": {
+        "contact_type": "website",
+        "minimum_confidence": 70,
+    },
+    "emails": {
+        "contact_type": "email",
+        "minimum_confidence": 80,
+    },
+    "phones": {
+        "contact_type": "phone",
+        "minimum_confidence": 80,
+    },
+}
+
+CONTACT_REASON_PRIORITY = {
+    "validated_company_website": 4,
+    "ico_match": 3,
+    "verified_source_domain": 2,
+    "verified_domain_match": 1,
+    "ico_match_unverified_source": 1,
+    "social_profile_name_and_municipality_match": 0,
+    "name_location_unverified_source": 0,
+}
+
+
+def select_best_company_contacts(aggregated, include_candidates=False):
+    if not isinstance(aggregated, dict):
+        return {}
+
+    selected = {}
+
+    for collection_name, rule in CONTACT_SELECTION_RULES.items():
+        contacts = aggregated.get(collection_name, [])
+
+        if not isinstance(contacts, list):
+            continue
+
+        contacts = list(contacts)
+
+        if include_candidates:
+            possible_contacts = aggregated.get("possible_contacts", {})
+            if isinstance(possible_contacts, dict):
+                candidate_contacts = possible_contacts.get(collection_name, [])
+
+                if isinstance(candidate_contacts, list):
+                    contacts.extend(candidate_contacts)
+
+        eligible = []
+
+        for contact in contacts:
+            if not isinstance(contact, dict):
+                continue
+
+            value = contact.get("value")
+            confidence = contact.get("confidence")
+
+            if not isinstance(value, str) or not value.strip():
+                continue
+
+            if not isinstance(confidence, (int, float)):
+                continue
+
+            minimum_confidence = rule["minimum_confidence"]
+            if contact.get("reason") == "validated_company_website":
+                minimum_confidence = VALIDATED_WEBSITE_MINIMUM_CONFIDENCE
+            elif contact.get("reason") in {
+                "ico_match_unverified_source",
+                "social_profile_name_and_municipality_match",
+                "name_location_unverified_source",
+            }:
+                minimum_confidence = UNVERIFIED_CONTACT_MINIMUM_CONFIDENCE
+
+            if confidence < minimum_confidence:
+                continue
+
+            source_url = contact.get("source_url")
+            is_unverified_candidate = contact.get("reason") in {
+                "ico_match_unverified_source",
+                "social_profile_name_and_municipality_match",
+                "name_location_unverified_source",
+            }
+            if (
+                source_url
+                and is_directory_domain(source_url)
+                and not is_unverified_candidate
+            ):
+                continue
+
+            if (
+                collection_name == "websites"
+                and is_directory_domain(value)
+            ):
+                continue
+
+            eligible.append(contact)
+
+        if not eligible:
+            continue
+
+        selected[rule["contact_type"]] = max(
+            eligible,
+            key=lambda contact: (
+                contact["confidence"],
+                CONTACT_REASON_PRIORITY.get(contact.get("reason"), 0),
+                contact.get("value", ""),
+            ),
+        )
+
+    return selected
+
+
+def save_best_company_contacts(company, aggregated, include_candidates=True):
+    selected_contacts = select_best_company_contacts(
+        aggregated,
+        include_candidates=include_candidates,
+    )
+
+    if not selected_contacts:
+        return []
+
+    existing_contacts = list(company.contacts)
+    saved_contacts = []
+
+    for contact_type, selected_contact in selected_contacts.items():
+        value = selected_contact["value"].strip()
+        contact = next(
+            (
+                existing_contact
+                for existing_contact in existing_contacts
+                if (
+                    existing_contact.contact_type == contact_type
+                    and existing_contact.value == value
+                )
+            ),
+            None,
+        )
+
+        is_verified = bool(selected_contact.get("ico_validated")) or (
+            selected_contact.get("reason") == "ico_match"
+        )
+        has_verified_contact = any(
+            existing_contact.contact_type == contact_type
+            and existing_contact.is_verified
+            for existing_contact in existing_contacts
+        )
+
+        if contact is None:
+            contact = CompanyContact(
+                company=company,
+                contact_type=contact_type,
+                value=value,
+                source_type=(
+                    "brave_validated"
+                    if is_verified
+                    else "brave_candidate"
+                ),
+            )
+            db.session.add(contact)
+            existing_contacts.append(contact)
+
+        if contact.source_type in {
+            "brave_search",
+            "brave_candidate",
+            "brave_validated",
+        }:
+            contact.source_url = selected_contact.get("source_url")
+            contact.label = selected_contact.get("reason")
+            contact.confidence_score = selected_contact["confidence"]
+            contact.source_type = (
+                "brave_validated"
+                if is_verified
+                else "brave_candidate"
+            )
+
+        contact.is_verified = contact.is_verified or is_verified
+        if is_verified or not has_verified_contact:
+            for existing_contact in existing_contacts:
+                if existing_contact.contact_type == contact_type:
+                    existing_contact.is_primary = False
+            contact.is_primary = True
+
+        if is_verified:
+            contact.last_verified_at = utcnow()
+
+        saved_contacts.append(contact)
+
+    return saved_contacts
+
+
+def mark_directory_contacts_unverified():
+    """Označí staré Brave kontakty z katalógov ako neoverené.
+
+    Záznamy nemažeme, aby zostali dostupné na manuálnu kontrolu.
+    """
+    updated_contacts = 0
+
+    for contact in CompanyContact.query.all():
+        if contact.source_type not in {
+            "brave_search",
+            "brave_candidate",
+            "brave_validated",
+        }:
+            continue
+
+        is_directory_website = (
+            contact.contact_type == "website"
+            and is_directory_domain(contact.value)
+        )
+
+        source_is_directory = bool(
+            contact.source_url and is_directory_domain(contact.source_url)
+        )
+
+        if not source_is_directory and not is_directory_website:
+            continue
+
+        contact.is_verified = False
+        contact.is_primary = False
+        contact.label = "directory_source_unverified"
+        contact.source_type = "brave_candidate"
+        updated_contacts += 1
+
+    for contact in CompanyContact.query.filter_by(
+        source_type="brave_validated",
+    ).all():
+        if contact.confidence_score == 100:
+            continue
+
+        contact.is_verified = False
+        contact.label = "domain_match_unverified"
+        contact.source_type = "brave_candidate"
+        updated_contacts += 1
+
+    return updated_contacts
+
+
+def enrich_company_contacts(
+    max_companies=None,
+    delay_seconds=0.5,
+    include_existing=False,
+):
+    """Doplní kontakty z Brave pre firmy uložené v databáze.
+
+    Overené kontakty sa označia ako verified. Pri presnej zhode IČO sa
+    uloží aj kandidátny e-mail alebo telefón s označením unverified,
+    aby zostal dostupný na následnú manuálnu kontrolu.
+    """
+    companies = Company.query.order_by(Company.created_at.desc()).all()
+
+    if not include_existing:
+        companies = [company for company in companies if not company.contacts]
+
+    if max_companies is not None:
+        companies = companies[:max_companies]
+
+    summary = {
+        "processed_companies": 0,
+        "companies_with_contacts": 0,
+        "saved_contacts": 0,
+        "reclassified_directory_contacts": mark_directory_contacts_unverified(),
+        "errors": [],
+    }
+
+    db.session.commit()
+
+    for company in companies:
+        try:
+            results = fetch_company_contact_results(company, delay_seconds)
+            aggregated = aggregate_company_contacts(company, results)
+            saved_contacts = save_best_company_contacts(
+                company,
+                aggregated,
+                include_candidates=True,
+            )
+            db.session.commit()
+        except Exception as exc:
+            db.session.rollback()
+            logger.exception(
+                "Nepodarilo sa doplniť kontakty pre IČO %s",
+                company.ico,
+            )
+            summary["errors"].append({
+                "ico": company.ico,
+                "error": str(exc),
+            })
+            continue
+
+        summary["processed_companies"] += 1
+        summary["saved_contacts"] += len(saved_contacts)
+
+        if saved_contacts:
+            summary["companies_with_contacts"] += 1
+
+    return summary
+
+        
+
 
 
 
@@ -1216,11 +2575,14 @@ def upsert_rpo_record(record: dict[str, Any]) -> Company:
         ) from exc
 
     normalized = normalized_rpo_fields(record)
-    if not normalized["ico"] and not normalized["official_name"]:
-        logger.warning(
-            "RPO záznam %s nemá ani IČO ani oficiálny názov. "
-            "Záznam sa ignoruje.",
+    source_register = extract_source_register_name(record)
+
+    if should_skip_rpo_record(normalized, source_register):
+        logger.info(
+            "RPO záznam %s sa ignoruje (právna forma=%r, register=%r).",
             rpo_id,
+            normalized["legal_form"],
+            source_register,
         )
         return None
     ico = normalized["ico"]
@@ -1255,6 +2617,7 @@ def upsert_rpo_record(record: dict[str, Any]) -> Company:
         source = CompanySource(
             company_id=company.id,
             source_type="rpo2",
+            source_id=str(rpo_id),
             external_id=str(rpo_id),
             raw_data=record,
         )
@@ -1410,7 +2773,10 @@ def sync_rpo(
                     # Detail endpoint je ďalší request.
                     time.sleep(delay_seconds)
 
-                upsert_rpo_record(full_record)
+                company = upsert_rpo_record(full_record)
+
+                if company is None:
+                    continue
 
                 run_processed += 1
                 state.processed_records += 1

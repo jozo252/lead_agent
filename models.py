@@ -83,14 +83,7 @@ class EmailReply(db.Model):
 
 class Company(db.Model):
     __tablename__ = "companies"
-    __table_args__ = (
-    db.UniqueConstraint(
-        "company_id",
-        "contact_type",
-        "value",
-        name="uq_company_contact_type_value",
-    ),
-)
+   
 
     id = db.Column(db.Integer, primary_key=True)
 
@@ -165,14 +158,20 @@ class CompanySource(db.Model):
     """
 
     __tablename__ = "company_sources"
-
     __table_args__ = (
-        UniqueConstraint(
-            "source_type",
-            "external_id",
-            name="uq_company_source_external_record",
+        db.UniqueConstraint(
+            "company_id",
+            "source_id",
+            name="uq_company_source",
         ),
     )
+   # __table_args__ = (
+   #     UniqueConstraint(
+    #        "source_type",
+    #        "external_id",
+     #       name="uq_company_source_external_record",
+     #   ),
+   # )
 
     id = db.Column(db.Integer, primary_key=True)
 
@@ -189,6 +188,7 @@ class CompanySource(db.Model):
         default="rpo2",
         index=True,
     )
+    source_id = db.Column(db.String(255), nullable=False)
 
     external_id = db.Column(db.String(100), nullable=False, index=True)
 
@@ -381,4 +381,8 @@ class CompanyContact(db.Model):
     company = db.relationship(
         "Company",
         back_populates="contacts",
+    )
+    confidence_score = db.Column(
+        db.Float,
+        nullable=True,
     )

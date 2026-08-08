@@ -1,0 +1,185 @@
+{% extends "base.html" %}
+
+{% block title %}{{ company.official_name or company.ico }} | Firmy z RPO{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <a class="small" href="{{ url_for('main.companies') }}">← Všetky firmy</a>
+        <h2 class="page-title">{{ company.official_name or "Bez názvu" }}</h2>
+        <p class="page-subtitle">IČO: {{ company.ico or "—" }} · {{ company.municipality or "obec neznáma" }}</p>
+    </div>
+</div>
+
+<div class="grid grid-2 section-gap">
+    <section class="card">
+        <div class="card-header">
+            <div>
+                <h3 class="card-title">Údaje firmy</h3>
+                <p class="card-description">Dáta uložené z RPO.</p>
+            </div>
+        </div>
+        <dl class="company-data">
+            <dt>Názov</dt><dd>{{ company.official_name or "—" }}</dd>
+            <dt>IČO</dt><dd>{{ company.ico or "—" }}</dd>
+            <dt>Stav</dt><dd>{{ company.status or "—" }}</dd>
+            <dt>Právna forma</dt><dd>{{ company.legal_form or "—" }}</dd>
+            <dt>Ulica</dt><dd>{{ company.street or "—" }}</dd>
+            <dt>PSČ</dt><dd>{{ company.postal_code or "—" }}</dd>
+            <dt>Obec</dt><dd>{{ company.municipality or "—" }}</dd>
+            <dt>Krajina</dt><dd>{{ company.country or "—" }}</dd>
+            <dt>Vznik</dt><dd>{{ company.established_on or "—" }}</dd>
+            <dt>Zánik</dt><dd>{{ company.terminated_on or "—" }}</dd>
+            <dt>RPO aktualizácia</dt><dd>{{ company.rpo_actualized_at or "—" }}</dd>
+            <dt>RPO zmena</dt><dd>{{ company.rpo_updated_at or "—" }}</dd>
+            <dt>Uložené</dt><dd>{{ company.created_at or "—" }}</dd>
+            <dt>Naposledy upravené</dt><dd>{{ company.updated_at or "—" }}</dd>
+        </dl>
+    </section>
+
+    <section class="card">
+        <div class="card-header">
+            <div>
+                <h3 class="card-title">Kontakty</h3>
+                <p class="card-description">Kontakty uložené po overení.</p>
+            </div>
+            <span class="badge">{{ company.contacts|length }}</span>
+        </div>
+        <div class="contact-list">
+            {% for contact in company.contacts %}
+                <article class="contact-item">
+                    <strong>{{ contact.contact_type }}</strong>
+                    <div class="contact-value">{{ contact.value }}</div>
+                    <div class="contact-meta">
+                        {% if contact.is_verified %}
+                            <span class="badge verified-badge">Overený</span>
+                        {% else %}
+                            <span class="badge candidate-badge">Kandidát – overiť</span>
+                        {% endif %}
+                        <span class="muted small">Confidence: {{ contact.confidence_score if contact.confidence_score is not none else "—" }}</span>
+                    </div>
+                    {% if contact.source_url %}
+                        <a class="small" href="{{ contact.source_url }}" target="_blank" rel="noopener">Zdroj</a>
+                    {% endif %}
+                </article>
+            {% else %}
+                <p class="muted">Firma zatiaľ nemá uložené kontakty.</p>
+            {% endfor %}
+        </div>
+    </section>
+</div>
+
+<section class="card section-gap">
+    <div class="card-header">
+        <div>
+            <h3 class="card-title">Predmety činnosti</h3>
+            <p class="card-description">{{ company.activities|length }} uložených záznamov.</p>
+        </div>
+    </div>
+    <ul class="activity-list">
+        {% for activity in company.activities %}
+            <li>{{ activity.description }} <span class="muted small">{{ activity.valid_from or "" }}{% if activity.valid_to %} – {{ activity.valid_to }}{% endif %}</span></li>
+        {% else %}
+            <li class="muted">Žiadne uložené predmety činnosti.</li>
+        {% endfor %}
+    </ul>
+</section>
+
+<section class="card">
+    <div class="card-header">
+        <div>
+            <h3 class="card-title">RPO zdroje</h3>
+            <p class="card-description">Pôvodné záznamy, z ktorých bola firma vytvorená.</p>
+        </div>
+    </div>
+    {% for source in company.sources %}
+        <details class="source-item">
+            <summary>{{ source.source_type }} · ID {{ source.source_id }} · načítané {{ source.fetched_at }}</summary>
+            <div class="details-body">
+                {% if source.resource_url %}<p><a href="{{ source.resource_url }}" target="_blank" rel="noopener">Otvoriť RPO zdroj</a></p>{% endif %}
+                <pre>{{ source.raw_data|tojson(indent=2) }}</pre>
+            </div>
+        </details>
+    {% else %}
+        <p class="muted">Firma nemá uložený RPO zdroj.</p>
+    {% endfor %}
+</section>
+
+<style>
+    .company-data {
+        display: grid;
+        grid-template-columns: minmax(130px, 0.7fr) minmax(0, 1.3fr);
+        gap: 10px 16px;
+        margin: 0;
+    }
+
+    .company-data dt {
+        color: var(--muted);
+    }
+
+    .company-data dd {
+        margin: 0;
+        overflow-wrap: anywhere;
+    }
+
+    .contact-list {
+        display: grid;
+        gap: 10px;
+    }
+
+    .contact-item,
+    .source-item {
+        padding: 12px;
+        border: 1px solid var(--border-soft);
+        border-radius: 10px;
+        background: rgba(15, 23, 42, 0.45);
+    }
+
+    .contact-value {
+        margin: 5px 0;
+        overflow-wrap: anywhere;
+    }
+
+    .contact-meta {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+
+    .verified-badge {
+        border-color: rgba(34, 197, 94, 0.45);
+        color: #86efac;
+    }
+
+    .candidate-badge {
+        border-color: rgba(245, 158, 11, 0.45);
+        color: #fcd34d;
+    }
+
+    .activity-list {
+        margin: 0;
+        padding-left: 20px;
+    }
+
+    .activity-list li + li {
+        margin-top: 9px;
+    }
+
+    .source-item + .source-item {
+        margin-top: 10px;
+    }
+
+    pre {
+        max-height: 460px;
+        overflow: auto;
+        padding: 12px;
+        border-radius: 10px;
+        background: #020617;
+        color: #cbd5e1;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        font-size: 12px;
+    }
+</style>
+{% endblock %}

@@ -3,7 +3,7 @@ import json
 import click
 from flask.cli import with_appcontext
 
-from services.rpo_sync import sync_rpo
+from services.rpo_sync import enrich_company_contacts, sync_rpo
 
 
 @click.command("sync-rpo")
@@ -72,3 +72,45 @@ def sync_rpo_command(
             default=str,
         )
     )
+
+
+@click.command("enrich-contacts")
+@click.option(
+    "--max-companies",
+    type=click.IntRange(min=1),
+    default=20,
+    show_default=True,
+    help="Počet firiem, pre ktoré sa doplnia kontakty z Brave.",
+)
+@click.option(
+    "--delay",
+    type=click.FloatRange(min=0),
+    default=0.5,
+    show_default=True,
+    help="Pauza medzi Brave dotazmi v sekundách.",
+)
+@click.option(
+    "--include-existing",
+    is_flag=True,
+    default=False,
+    help="Spracuje aj firmy, ktoré už majú aspoň jeden kontakt.",
+)
+@with_appcontext
+def enrich_contacts_command(
+    max_companies: int,
+    delay: float,
+    include_existing: bool,
+) -> None:
+    """Doplní kontakty pre RPO firmy z Brave vyhľadávania."""
+    click.echo("Dopĺňam kontakty z Brave...")
+
+    try:
+        result = enrich_company_contacts(
+            max_companies=max_companies,
+            delay_seconds=delay,
+            include_existing=include_existing,
+        )
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    click.echo(json.dumps(result, ensure_ascii=False, indent=2))

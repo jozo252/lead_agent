@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+
+{% block title %}Firmy z RPO | LeadHunter CRM{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h2 class="page-title">Firmy z RPO</h2>
+        <p class="page-subtitle">{{ companies|length }} uložených firiem. Klikni na firmu pre detail dát a kontaktov.</p>
+    </div>
+</div>
+
+<section class="card section-gap">
+    <form method="get" class="company-search">
+        <input
+            type="search"
+            name="q"
+            value="{{ search_term }}"
+            placeholder="Hľadať podľa názvu, IČO alebo obce"
+        >
+        <button type="submit">Hľadať</button>
+        {% if search_term %}
+            <a class="btn btn-secondary" href="{{ url_for('main.companies') }}">Zrušiť filter</a>
+        {% endif %}
+    </form>
+</section>
+
+<section class="card">
+    <div class="table-wrap">
+        <table class="companies-table">
+            <thead>
+                <tr>
+                    <th>Firma</th>
+                    <th>IČO</th>
+                    <th>Obec</th>
+                    <th>Právna forma</th>
+                    <th>Kontakty</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for company in companies %}
+                    <tr>
+                        <td>
+                            <strong>{{ company.official_name or "Bez názvu" }}</strong>
+                            <div class="muted small">{{ company.status or "stav neznámy" }}</div>
+                        </td>
+                        <td>{{ company.ico or "—" }}</td>
+                        <td>{{ company.municipality or "—" }}</td>
+                        <td>{{ company.legal_form or "—" }}</td>
+                        <td><span class="badge">{{ company.contacts|length }}</span></td>
+                        <td><a class="btn btn-small" href="{{ url_for('main.company_detail', company_id=company.id) }}">Detail</a></td>
+                    </tr>
+                {% else %}
+                    <tr>
+                        <td colspan="6" class="muted">Nenašli sa žiadne firmy.</td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<style>
+    .company-search {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+    }
+
+    .company-search input {
+        max-width: 540px;
+    }
+
+    .companies-table {
+        min-width: 820px;
+    }
+
+    @media (max-width: 720px) {
+        .company-search {
+            align-items: stretch;
+            flex-direction: column;
+        }
+    }
+</style>
+{% endblock %}

@@ -3,6 +3,8 @@ Flask-SQLAlchemy
 Flask-Migrate
 Flask-Login
 Flask-WTF
+Flask-Mail
+beautifulsoup4
 email-validator
 python-dotenv
 requests

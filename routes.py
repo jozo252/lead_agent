@@ -2,7 +2,7 @@ from datetime import datetime, date
 from reply_generator import generate_reply_to_customer
 
 from flask import Blueprint, render_template, request, redirect, url_for, flash
-from models import Lead, LeadActivity, EmailReply
+from models import Company, EmailReply, Lead, LeadActivity
 from extensions import db, mail, csrf
 from ai_service import generate_lead_message, analyze_lead
 from flask_mail import Message
@@ -13,7 +13,7 @@ from datetime import datetime
 import requests
 import os
 from email.utils import parseaddr
-from sqlalchemy import func
+from sqlalchemy import func, or_
 
 
 main_bp = Blueprint("main", __name__)
@@ -67,6 +67,37 @@ ACTIVITY_TYPES = [
     "Vyhraté",
     "Prehraté"
 ]
+
+
+@main_bp.route("/companies")
+def companies():
+    search_term = request.args.get("q", "").strip()
+    query = Company.query
+
+    if search_term:
+        pattern = f"%{search_term}%"
+        query = query.filter(
+            or_(
+                Company.ico.ilike(pattern),
+                Company.official_name.ilike(pattern),
+                Company.municipality.ilike(pattern),
+            )
+        )
+
+    companies = query.order_by(Company.official_name, Company.ico).all()
+
+    return render_template(
+        "companies.html",
+        companies=companies,
+        search_term=search_term,
+    )
+
+
+@main_bp.route("/companies/<int:company_id>")
+def company_detail(company_id):
+    company = Company.query.get_or_404(company_id)
+
+    return render_template("company_detail.html", company=company)
 
 @main_bp.route("/", methods=["GET", "POST"])
 def home():

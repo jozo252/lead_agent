@@ -1,5 +1,8 @@
 
 
+from services.rpo_sync import debug_search_results, fetch_search_results, extract_contacts_from_search_result
+
+
 def strip_legal_suffix(name):
     suffixes = [
     "s.r.o.",
@@ -16,7 +19,7 @@ def strip_legal_suffix(name):
 
     return name
 
-print(strip_legal_suffix("ABC Elektro s. r.o."))
+#print(strip_legal_suffix("ABC Elektro s. r.o."))
 
 raw_data = {
     "web": {
@@ -63,4 +66,12 @@ def normalize_search_results(raw_data):
 
     return normalized
 
-print(normalize_search_results(raw_data))
+#print(normalize_search_results(raw_data))
+
+
+response = fetch_search_results('"elektroinstalaciepoprad" Poprad')
+
+
+
+
+print(extract_contacts_from_search_result(response))

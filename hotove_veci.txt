@@ -1,9 +1,50 @@
-Co viem spravit:
--ziskat firmy v okoli,
--ziskat ich email
--spravit ai oslovenie,
--poslať ho
--ziskat odpoved asi
--spravit reply na odpoved
--poslat ten reply.
+LEAD AGENT - PREHĽAD PRÁCE
+==========================
 
+HOTOVÉ / IMPLEMENTOVANÉ
+-----------------------
+[x] RPO synchronizácia firiem do databázy.
+[x] Ukladanie základných údajov firmy: IČO, názov, obec a aktivity.
+[x] Vyhľadávanie výsledkov cez Brave Search API.
+[x] Extrakcia webov, e-mailov, telefónov a IČO zo search výsledkov.
+[x] Filtrovanie sociálnych sietí a známych nefiremných domén.
+[x] Filtrovanie kontaktov podľa IČO, overenej domény a zhody názvu firmy.
+[x] Výber najlepšieho webu, e-mailu a telefónu podľa confidence.
+[x] Ukladanie vybraných kontaktov do CompanyContact vrátane zdroja a confidence.
+[x] Testovací skript test_brave.py s režimom náhľadu a voliteľným --save.
+[x] Príprava AI oslovenia a odpovede na e-mail.
+
+POTREBUJE OTESTOVAŤ
+-------------------
+[ ] Zajtra: preveriť `aggregate_company_contacts` na reálnych Brave výsledkoch; kontakty sa pri firme RAVUS s.r.o. nevybrali.
+[ ] Spustiť test_brave.py bez --save a skontrolovať vybrané kontakty.
+[ ] Overiť --save na firme, ktorá už existuje v databáze.
+[ ] Opraviť Python/.venv prostredie, aby sa dali spúšťať unit testy.
+[ ] Overiť, že sa pri opakovanom behu nevytvárajú duplicitné kontakty.
+[ ] Skontrolovať, či confidence prahy 70/80 dávajú dosť výsledkov.
+
+NAJBLIŽŠIE MÍĽNIKY
+------------------
+[ ] Napojenie vyhľadania kontaktov na UI alebo Flask endpoint.
+[ ] Tlačidlo „Nájsť kontakty“ pri detaili firmy.
+[ ] Zobrazenie confidence, zdroja a dôvodu pri každom kontakte.
+[ ] Možnosť manuálne potvrdiť alebo zamietnuť kontakt.
+[ ] Vybrať primárny e-mail pre odoslanie oslovenia.
+[ ] Vytvoriť návrh AI e-mailu z údajov firmy.
+[ ] Manuálne schválenie e-mailu pred odoslaním.
+[ ] Odoslanie e-mailu a uloženie histórie komunikácie.
+[ ] Spracovanie prichádzajúcich odpovedí a návrh reply cez AI.
+
+NESKÔR / VYLEPŠENIA
+-------------------
+[ ] Pridať ďalšie katalógy do filtrovania domén podľa reálnych výsledkov.
+[ ] Získavať kontakty aj priamo z kontaktných stránok overeného webu.
+[ ] Overovať e-mail cez DNS/MX alebo e-mail validation službu.
+[ ] Pridať rate limit a frontu pre Brave vyhľadávania a odosielanie e-mailov.
+[ ] Dashboard: firmy, nájdené kontakty, odoslané oslovenia a odpovede.
+
+POZNÁMKY
+--------
+- Predvolené prahy pre uloženie: web >= 70, e-mail >= 80, telefón >= 80.
+- Kontakt s dôvodom ico_match sa označuje ako overený.
+- test_brave.py bez parametrov nič nezapisuje do databázy.

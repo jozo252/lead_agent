@@ -6,41 +6,128 @@
 <div class="page-header">
     <div>
         <h2 class="page-title">Firmy z RPO</h2>
-        <p class="page-subtitle">{{ companies|length }} uložených firiem. Klikni na firmu pre detail dát a kontaktov.</p>
+        <p class="page-subtitle">Zobrazených {{ companies|length }} z {{ filtered_companies_count }} vyfiltrovaných firiem (celkovo {{ total_companies }}). Strana {{ page }} z {{ page_count }}.</p>
     </div>
 </div>
 
 <section class="card section-gap">
-    <form method="get" class="company-search">
-        <input
-            type="search"
-            name="q"
-            value="{{ search_term }}"
-            placeholder="Hľadať podľa názvu, IČO alebo obce"
-        >
-        <button type="submit">Hľadať</button>
-        {% if search_term %}
-            <a class="btn btn-secondary" href="{{ url_for('main.companies') }}">Zrušiť filter</a>
-        {% endif %}
+    <form method="get" class="company-filters">
+        <input type="search" name="q" value="{{ filters.q }}" placeholder="Názov, IČO alebo obec">
+        <input type="search" name="sk_nace" value="{{ filters.sk_nace }}" placeholder="SK NACE, napr. 4321 alebo elektro">
+        <input type="search" name="region" value="{{ filters.region }}" placeholder="Obec alebo región, napr. Košice">
+        <select name="contacts">
+            <option value="">Všetky kontakty</option>
+            <option value="any" {% if filters.contacts == "any" %}selected{% endif %}>Má kontakt</option>
+            <option value="verified" {% if filters.contacts == "verified" %}selected{% endif %}>Overený kontakt</option>
+            <option value="candidate" {% if filters.contacts == "candidate" %}selected{% endif %}>Kandidátny kontakt</option>
+        </select>
+        <select name="website">
+            <option value="">Web: všetky</option>
+            <option value="yes" {% if filters.website == "yes" %}selected{% endif %}>Má uložený web</option>
+            <option value="no" {% if filters.website == "no" %}selected{% endif %}>Bez uloženého webu</option>
+        </select>
+        <select name="analyzed">
+            <option value="">Web: všetky</option>
+            <option value="yes" {% if filters.analyzed == "yes" %}selected{% endif %}>Web analyzovaný</option>
+            <option value="no" {% if filters.analyzed == "no" %}selected{% endif %}>Web neanalyzovaný</option>
+        </select>
+        <select name="relevant">
+            <option value="">Relevancia: všetky</option>
+            <option value="yes" {% if filters.relevant == "yes" %}selected{% endif %}>Relevantná na oslovenie</option>
+        </select>
+        <select name="abroad">
+            <option value="">Zahraničie: všetky</option>
+            <option value="yes" {% if filters.abroad == "yes" %}selected{% endif %}>Pôsobí v zahraničí</option>
+        </select>
+        <select name="subcontractor_need">
+            <option value="">Potreba kapacity: všetky</option>
+            <option value="high" {% if filters.subcontractor_need == "high" %}selected{% endif %}>Vysoká</option>
+            <option value="medium" {% if filters.subcontractor_need == "medium" %}selected{% endif %}>Stredná</option>
+            <option value="low" {% if filters.subcontractor_need == "low" %}selected{% endif %}>Nízka</option>
+        </select>
+        <div class="filter-actions">
+            <button type="submit">Filtrovať</button>
+            <a class="btn btn-secondary" href="{{ url_for('main.companies') }}">Zrušiť</a>
+        </div>
+    </form>
+</section>
+
+<section class="card section-gap batch-analysis-card">
+    <div>
+        <h3 class="card-title">Nájsť kontakty pre vyfiltrované firmy</h3>
+        <p class="muted small">Prehľadá iba firmy bez kontaktu, ktoré ešte neboli kontrolované. Už overené firmy sa nebudú znovu míňať v Brave.</p>
+    </div>
+    <form method="post" action="{{ url_for('main.enrich_filtered_company_contacts') }}" class="batch-analysis-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        {% for name, value in filters.items() %}
+            <input type="hidden" name="{{ name }}" value="{{ value }}">
+        {% endfor %}
+        <label>
+            Počet firiem
+            <input type="number" name="batch_size" value="25" min="1" max="100">
+        </label>
+        <button type="submit" onclick="return confirm('Spustiť hľadanie kontaktov pre vyfiltrované firmy?');">Nájsť kontakty vo vybranej dávke</button>
+    </form>
+</section>
+
+<section class="card section-gap batch-analysis-card">
+    <div>
+        <h3 class="card-title">Analyzovať vyfiltrované firmy</h3>
+        <p class="muted small">Spustí AI webovú analýzu iba pre firmy s uloženým webom. Jedna dávka má najviac 25 firiem.</p>
+    </div>
+    <form method="post" action="{{ url_for('main.analyze_filtered_company_websites') }}" class="batch-analysis-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        {% for name, value in filters.items() %}
+            <input type="hidden" name="{{ name }}" value="{{ value }}">
+        {% endfor %}
+        <label>
+            Počet firiem
+            <input type="number" name="batch_size" value="10" min="1" max="25">
+        </label>
+        <label class="checkbox-label">
+            <input type="checkbox" name="include_analyzed" value="1">
+            Analyzovať aj už analyzované
+        </label>
+        <button type="submit" onclick="return confirm('Spustiť webovú AI analýzu pre vyfiltrované firmy?');">Analyzovať vybranú dávku</button>
     </form>
 </section>
 
 <section class="card">
+    {% if page_count > 1 %}
+        <nav class="company-pagination" aria-label="Stránkovanie firiem">
+            {% if page > 1 %}
+                <a class="btn btn-secondary btn-small" href="{{ url_for('main.companies', page=page - 1, **active_filters) }}">← Predchádzajúca</a>
+            {% else %}
+                <span></span>
+            {% endif %}
+            <span class="muted small">Strana {{ page }} / {{ page_count }}</span>
+            {% if page < page_count %}
+                <a class="btn btn-secondary btn-small" href="{{ url_for('main.companies', page=page + 1, **active_filters) }}">Ďalšia →</a>
+            {% else %}
+                <span></span>
+            {% endif %}
+        </nav>
+    {% endif %}
     <div class="table-wrap">
         <table class="companies-table">
             <thead>
                 <tr>
+                    <th>Por.</th>
                     <th>Firma</th>
                     <th>IČO</th>
                     <th>Obec</th>
                     <th>Právna forma</th>
+                    <th>SK NACE</th>
                     <th>Kontakty</th>
+                    <th>Status</th>
+                    <th>Obchodný profil</th>
                     <th></th>
                 </tr>
             </thead>
             <tbody>
                 {% for company in companies %}
                     <tr>
+                        <td class="company-index">{{ (page - 1) * page_size + loop.index }}</td>
                         <td>
                             <strong>{{ company.official_name or "Bez názvu" }}</strong>
                             <div class="muted small">{{ company.status or "stav neznámy" }}</div>
@@ -48,12 +135,37 @@
                         <td>{{ company.ico or "—" }}</td>
                         <td>{{ company.municipality or "—" }}</td>
                         <td>{{ company.legal_form or "—" }}</td>
-                        <td><span class="badge">{{ company.contacts|length }}</span></td>
+                        <td>
+                            {% if company.sk_nace_code %}
+                                <strong>{{ company.sk_nace_code }}</strong>
+                                <div class="muted small">{{ company.sk_nace_name or "" }}</div>
+                            {% else %}—{% endif %}
+                        </td>
+                        <td>
+                            <span class="badge">{{ company.contacts|length }}</span></td>
+                        <td>    
+                            {% if company.contacts|selectattr("is_verified")|list|length %}
+                                <span class="badge verified-badge">overený</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if company.website_analyzed_at %}
+                                <span class="badge">analyzované</span>
+                            {% else %}
+                                <span class="muted small">bez analýzy</span>
+                            {% endif %}
+                            {% if company.outreach_relevant %}
+                                <span class="badge verified-badge">osloviť</span>
+                            {% endif %}
+                            {% if company.subcontractor_need %}
+                                <div class="muted small">Kapacita: {{ company.subcontractor_need }}</div>
+                            {% endif %}
+                        </td>
                         <td><a class="btn btn-small" href="{{ url_for('main.company_detail', company_id=company.id) }}">Detail</a></td>
                     </tr>
                 {% else %}
                     <tr>
-                        <td colspan="6" class="muted">Nenašli sa žiadne firmy.</td>
+                        <td colspan="10" class="muted">Nenašli sa žiadne firmy pre zadané filtre.</td>
                     </tr>
                 {% endfor %}
             </tbody>
@@ -62,22 +174,81 @@
 </section>
 
 <style>
-    .company-search {
-        display: flex;
+    .company-filters {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(180px, 1fr));
         gap: 10px;
-        align-items: center;
+        align-items: end;
     }
 
-    .company-search input {
-        max-width: 540px;
+    .filter-actions {
+        display: flex;
+        gap: 10px;
+    }
+
+    .batch-analysis-card,
+    .batch-analysis-form {
+        align-items: end;
+        display: flex;
+        gap: 16px;
+        justify-content: space-between;
+    }
+
+    .batch-analysis-form {
+        flex-wrap: wrap;
+    }
+
+    .batch-analysis-form label {
+        display: grid;
+        font-size: 0.9rem;
+        gap: 6px;
+    }
+
+    .batch-analysis-form input[type="number"] {
+        width: 100px;
+    }
+
+    .batch-analysis-form .checkbox-label {
+        align-items: center;
+        display: flex;
+        gap: 8px;
     }
 
     .companies-table {
-        min-width: 820px;
+        min-width: 1150px;
+    }
+
+    .company-pagination {
+        align-items: center;
+        display: grid;
+        gap: 12px;
+        grid-template-columns: 1fr auto 1fr;
+        padding: 0 0 16px;
+    }
+
+    .company-pagination a:last-child {
+        justify-self: end;
+    }
+
+    .company-index {
+        color: var(--text-muted);
+        font-variant-numeric: tabular-nums;
+        text-align: right;
+        width: 1%;
+        white-space: nowrap;
+    }
+
+    .verified-badge {
+        border-color: rgba(34, 197, 94, 0.45);
+        color: #86efac;
     }
 
     @media (max-width: 720px) {
-        .company-search {
+        .company-filters {
+            grid-template-columns: 1fr;
+        }
+
+        .batch-analysis-card {
             align-items: stretch;
             flex-direction: column;
         }

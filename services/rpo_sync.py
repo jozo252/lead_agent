@@ -140,6 +140,8 @@ def get_or_create_sync_state() -> SyncState:
             name=SYNC_NAME,
             status="idle",
             processed_records=0,
+            fetched_records=0,
+            skipped_records=0,
         )
         db.session.add(state)
         db.session.commit()
@@ -334,6 +336,27 @@ def extract_postal_code(
     return None
 
 
+def extract_sk_nace(payload: dict[str, Any]) -> tuple[str | None, str | None]:
+    """Vytiahne hlavnú SK NACE činnosť z RPO statisticalCodes."""
+    statistical_codes = payload.get("statisticalCodes")
+
+    if not isinstance(statistical_codes, dict):
+        return None, None
+
+    main_activity = statistical_codes.get("mainActivity")
+
+    if not isinstance(main_activity, dict):
+        return None, None
+
+    code = main_activity.get("code")
+    name = main_activity.get("value")
+
+    return (
+        str(code).strip() if code not in (None, "") else None,
+        str(name).strip() if name not in (None, "") else None,
+    )
+
+
 def normalized_rpo_fields(
     record: dict[str, Any],
 ) -> dict[str, Any]:
@@ -387,6 +410,7 @@ def normalized_rpo_fields(
 
     establishment = payload.get("establishment")
     termination = payload.get("termination")
+    sk_nace_code, sk_nace_name = extract_sk_nace(payload)
 
     return {
         "ico": normalize_ico(ico),
@@ -401,6 +425,8 @@ def normalized_rpo_fields(
             else "active"
         ),
         "legal_form": legal_form,
+        "sk_nace_code": sk_nace_code,
+        "sk_nace_name": sk_nace_name,
         "municipality": municipality,
         "postal_code": extract_postal_code(
             current_address
@@ -633,6 +659,8 @@ def update_company_from_normalized(company, normalized):
     company.official_name = normalized.get("official_name")
     company.status = normalized.get("status")
     company.legal_form = normalized.get("legal_form")
+    company.sk_nace_code = normalized.get("sk_nace_code")
+    company.sk_nace_name = normalized.get("sk_nace_name")
     company.municipality = normalized.get("municipality")
     company.postal_code = normalized.get("postal_code")
     company.street = normalized.get("street")
@@ -830,20 +858,16 @@ def normalize_contact_value(contact_type,value):
     return value
 
 def strip_legal_suffix(name):
-    suffixes = [
-    "s.r.o.",
-    "s. r. o.",
-    "a.s.",
-    "a. s.",
-]
-    name = name.strip()
+    if not isinstance(name, str):
+        return ""
 
-    for suffix in suffixes:
-        if name.lower().endswith(suffix):
-            name = name[:-len(suffix)].strip()
-            break
-
-    return name
+    return re.sub(
+        r"(?:,\s*)?(?:spol\.\s*s\.?\s*r\.?\s*o\.?|"
+        r"s\.?\s*r\.?\s*o\.?|a\.?\s\.?)$",
+        "",
+        name.strip(),
+        flags=re.IGNORECASE,
+    ).strip(" ,")
 
 #------------------------------------------------------Company Search Queries----------------------------------
 def build_company_search_queries(company):
@@ -994,6 +1018,8 @@ UNVERIFIED_CONTACT_MINIMUM_CONFIDENCE = 40
 DIRECTORY_DOMAINS = {
     "zoznam.sk",
     "zlatestranky.sk",
+    "infoma.sk",
+    "slovakregion.sk",
     "kompass.com",
     "dnb.com",
     "foaf.sk",
@@ -1119,6 +1145,19 @@ def is_directory_domain(url):
             return True
 
     return False
+
+
+def is_foreign_country_domain(url):
+    """Vráti True pre cudzie dvojpísmenové domény, napr. .pt alebo .de."""
+    domain = extract_domain(url)
+    if not domain or "." not in domain:
+        return False
+
+    top_level_domain = domain.rsplit(".", 1)[-1]
+    return bool(
+        re.fullmatch(r"[a-z]{2}", top_level_domain)
+        and top_level_domain != "sk"
+    )
 def filter_search_results(results):
     if not isinstance(results, list):
         return []
@@ -1256,14 +1295,33 @@ def score_search_result(company, result):
 
 def build_derived_website_url(company):
     """Vytvorí možnú .sk doménu z obchodného názvu firmy."""
+    urls = build_derived_website_urls(company)
+    return urls[0] if urls else None
+
+
+def build_derived_website_urls(company):
+    """Vytvorí bezpečné varianty .sk domény vrátane právnej formy."""
     official_name = getattr(company, "official_name", None)
-    company_name = strip_legal_suffix(official_name) if official_name else ""
-    domain_label = normalize_for_domain(company_name)
+    if not official_name:
+        return []
 
-    if len(domain_label) < 3:
-        return None
+    company_name = strip_legal_suffix(official_name)
+    local_company_name = re.sub(
+        r"\b(?:slovakia|slovensko)\b",
+        "",
+        company_name,
+        flags=re.IGNORECASE,
+    ).strip(" ,.-")
+    domain_labels = [
+        normalize_for_domain(company_name),
+        normalize_for_domain(official_name),
+        normalize_for_domain(local_company_name),
+    ]
+    domain_labels = list(dict.fromkeys(
+        label for label in domain_labels if len(label) >= 3
+    ))
 
-    return f"https://{domain_label}.sk"
+    return [f"https://{domain_label}.sk" for domain_label in domain_labels]
 
 
 def extract_visible_page_text(html_content):
@@ -1287,6 +1345,7 @@ def fetch_validated_website_result(company, candidate_url):
         not candidate_url
         or is_blocked_domain(candidate_url)
         or is_directory_domain(candidate_url)
+        or is_foreign_country_domain(candidate_url)
         or is_social_domain(candidate_url)
     ):
         return None
@@ -1308,13 +1367,48 @@ def fetch_validated_website_result(company, candidate_url):
     official_name = getattr(company, "official_name", None)
     company_name = strip_legal_suffix(official_name) if official_name else ""
     normalized_name = normalize_for_domain(company_name)
+    normalized_official_name = normalize_for_domain(official_name)
     normalized_text = normalize_for_domain(visible_text)
     name_matches = normalized_name and normalized_name in normalized_text
     ico_matches = company_ico and company_ico in visible_text
     domain = extract_domain(response.url)
     domain_label = domain.split(".", 1)[0] if domain else ""
-    domain_matches = normalized_name and normalized_name == domain_label
-    if not ico_matches and not (name_matches and domain_matches):
+    company_tokens = [
+        normalize_for_domain(token)
+        for token in re.findall(r"[\wÀ-ž]+", company_name)
+    ]
+    domain_matches = normalized_name and (
+        normalized_name == domain_label
+        or (
+            (domain or "").endswith(".sk")
+            and domain_label in {
+                token for token in company_tokens if len(token) >= 4
+            }
+        )
+    )
+    exact_legal_domain_match = (
+        normalized_official_name
+        and normalized_official_name == domain_label
+        and (domain or "").endswith(".sk")
+    )
+    municipality = getattr(company, "municipality", None)
+    normalized_municipality = normalize_for_domain(municipality)
+    location_matches = (
+        normalized_municipality
+        and normalized_municipality in normalized_text
+    )
+
+    if not ico_matches and not (
+        (name_matches and domain_matches)
+        or exact_legal_domain_match
+    ):
+        return None
+
+    if (
+        not ico_matches
+        and len(normalized_name) <= 5
+        and not ((domain or "").endswith(".sk") or location_matches)
+    ):
         return None
 
     title_match = re.search(
@@ -1336,10 +1430,12 @@ def fetch_validated_website_result(company, candidate_url):
 
 def fetch_derived_website_result(company):
     """Overí odvodenú .sk doménu a vráti ju ako search výsledok."""
-    return fetch_validated_website_result(
-        company,
-        build_derived_website_url(company),
-    )
+    for candidate_url in build_derived_website_urls(company):
+        result = fetch_validated_website_result(company, candidate_url)
+        if result:
+            return result
+
+    return None
 
 
 def validate_company_website_results(company, results, maximum_checks=5):
@@ -1363,6 +1459,7 @@ def validate_company_website_results(company, results, maximum_checks=5):
             checks_left > 0
             and not is_blocked_domain(result_url)
             and not is_directory_domain(result_url)
+            and not is_foreign_country_domain(result_url)
             and not is_social_domain(result_url)
             and score_search_result(company, result) >= CONTACT_SCORE_NAME_MATCH
         )
@@ -1793,6 +1890,7 @@ def aggregate_company_contacts(company, results):
                 domain
                 and not is_blocked_domain(website)
                 and not is_directory_domain(website)
+                and not is_foreign_country_domain(website)
             ):
                 website_domains.append(domain)
 
@@ -1840,6 +1938,7 @@ def aggregate_company_contacts(company, results):
             and source_url
             and not is_blocked_domain(source_url)
             and not is_directory_domain(source_url)
+            and not is_foreign_country_domain(source_url)
             and candidate["website_validated"]
         )
         candidate["social_profile_match"] = bool(
@@ -1848,6 +1947,7 @@ def aggregate_company_contacts(company, results):
         )
 
     verified_domains = set()
+    verified_email_domains = {}
 
     for candidate in candidates:
         if (
@@ -1858,6 +1958,23 @@ def aggregate_company_contacts(company, results):
 
         if candidate["source_is_company_website"]:
             verified_domains.add(candidate["source_domain"])
+
+        if candidate["ico_match"]:
+            for email in candidate["emails"]:
+                normalized_email = normalize_contact_value("email", email)
+                if not normalized_email or "@" not in normalized_email:
+                    continue
+
+                email_domain = normalized_email.rsplit("@", 1)[-1]
+                if (
+                    not is_blocked_domain(email_domain)
+                    and not is_directory_domain(email_domain)
+                    and not is_foreign_country_domain(email_domain)
+                ):
+                    verified_email_domains.setdefault(
+                        email_domain,
+                        candidate["source_url"],
+                    )
 
     websites = []
     emails = []
@@ -1875,6 +1992,18 @@ def aggregate_company_contacts(company, results):
     seen_possible_websites = set()
     seen_possible_emails = set()
     seen_possible_phones = set()
+
+    for email_domain, source_url in verified_email_domains.items():
+        website_url = f"https://{email_domain}"
+        seen_websites.add(website_url)
+        websites.append({
+            "value": website_url,
+            "domain": email_domain,
+            "source_url": source_url,
+            "confidence": 95,
+            "reason": "ico_verified_email_domain",
+            "ico_validated": True,
+        })
 
     for candidate in candidates:
         matching_domains = (
@@ -1914,6 +2043,7 @@ def aggregate_company_contacts(company, results):
                     not domain
                     or is_blocked_domain(website)
                     or is_directory_domain(website)
+                    or is_foreign_country_domain(website)
                     or website in seen_possible_websites
                 ):
                     continue
@@ -2105,6 +2235,7 @@ CONTACT_SELECTION_RULES = {
 CONTACT_REASON_PRIORITY = {
     "validated_company_website": 4,
     "ico_match": 3,
+    "ico_verified_email_domain": 3,
     "verified_source_domain": 2,
     "verified_domain_match": 1,
     "ico_match_unverified_source": 1,
@@ -2178,7 +2309,10 @@ def select_best_company_contacts(aggregated, include_candidates=False):
 
             if (
                 collection_name == "websites"
-                and is_directory_domain(value)
+                and (
+                    is_directory_domain(value)
+                    or is_foreign_country_domain(value)
+                )
             ):
                 continue
 
@@ -2226,7 +2360,10 @@ def save_best_company_contacts(company, aggregated, include_candidates=True):
         )
 
         is_verified = bool(selected_contact.get("ico_validated")) or (
-            selected_contact.get("reason") == "ico_match"
+            selected_contact.get("reason") in {
+                "ico_match",
+                "ico_verified_email_domain",
+            }
         )
         has_verified_contact = any(
             existing_contact.contact_type == contact_type
@@ -2294,7 +2431,10 @@ def mark_directory_contacts_unverified():
 
         is_directory_website = (
             contact.contact_type == "website"
-            and is_directory_domain(contact.value)
+            and (
+                is_directory_domain(contact.value)
+                or is_foreign_country_domain(contact.value)
+            )
         )
 
         source_is_directory = bool(
@@ -2324,10 +2464,24 @@ def mark_directory_contacts_unverified():
     return updated_contacts
 
 
+def companies_for_contact_enrichment(include_existing: bool) -> list[Company]:
+    """Vyberie firmy pre prvú alebo vynútenú opakovanú kontrolu kontaktov."""
+    query = Company.query.order_by(Company.created_at.desc())
+
+    if include_existing:
+        return query.all()
+
+    return query.filter(
+        Company.contacts_checked_at.is_(None),
+        ~Company.contacts.any(),
+    ).all()
+
+
 def enrich_company_contacts(
     max_companies=None,
     delay_seconds=0.5,
     include_existing=False,
+    companies: list[Company] | None = None,
 ):
     """Doplní kontakty z Brave pre firmy uložené v databáze.
 
@@ -2335,26 +2489,26 @@ def enrich_company_contacts(
     uloží aj kandidátny e-mail alebo telefón s označením unverified,
     aby zostal dostupný na následnú manuálnu kontrolu.
     """
-    companies = Company.query.order_by(Company.created_at.desc()).all()
+    if companies is None:
+        companies = companies_for_contact_enrichment(include_existing)
 
-    if not include_existing:
-        companies = [company for company in companies if not company.contacts]
-
-    if max_companies is not None:
-        companies = companies[:max_companies]
+        if max_companies is not None:
+            companies = companies[:max_companies]
 
     summary = {
         "processed_companies": 0,
         "companies_with_contacts": 0,
+        "companies_without_contacts": 0,
         "saved_contacts": 0,
         "reclassified_directory_contacts": mark_directory_contacts_unverified(),
         "errors": [],
     }
 
     db.session.commit()
-
+    count = 1
     for company in companies:
         try:
+            
             results = fetch_company_contact_results(company, delay_seconds)
             aggregated = aggregate_company_contacts(company, results)
             saved_contacts = save_best_company_contacts(
@@ -2362,6 +2516,9 @@ def enrich_company_contacts(
                 aggregated,
                 include_candidates=True,
             )
+            company.contacts_checked_at = utcnow()
+            print(f"{count}. Spracovaná firma: {company.official_name}: {len(saved_contacts)} kontaktov")
+            count += 1
             db.session.commit()
         except Exception as exc:
             db.session.rollback()
@@ -2380,6 +2537,8 @@ def enrich_company_contacts(
 
         if saved_contacts:
             summary["companies_with_contacts"] += 1
+        else:
+            summary["companies_without_contacts"] += 1
 
     return summary
 
@@ -2548,6 +2707,8 @@ def update_company_from_rpo(
     company.official_name = normalized["official_name"]
     company.status = normalized["status"]
     company.legal_form = normalized["legal_form"]
+    company.sk_nace_code = normalized["sk_nace_code"]
+    company.sk_nace_name = normalized["sk_nace_name"]
     company.municipality = normalized["municipality"]
     company.postal_code = normalized["postal_code"]
     company.street = normalized["street"]
@@ -2643,6 +2804,29 @@ def upsert_rpo_record(record: dict[str, Any]) -> Company:
     return company
 
 
+def backfill_rpo_company_fields():
+    """Doplní nové RPO polia pre firmy uložené pred rozšírením schémy."""
+    updated_companies = 0
+    seen_company_ids = set()
+
+    for source in CompanySource.query.filter_by(source_type="rpo2").all():
+        if source.company_id in seen_company_ids:
+            continue
+
+        normalized = normalized_rpo_fields(source.raw_data)
+        company = source.company
+        company.sk_nace_code = normalized["sk_nace_code"]
+        company.sk_nace_name = normalized["sk_nace_name"]
+        seen_company_ids.add(company.id)
+        updated_companies += 1
+
+    db.session.commit()
+
+    return {
+        "updated_companies": updated_companies,
+    }
+
+
 def create_initial_sync_url(
     state: SyncState,
     only_ids: bool,
@@ -2686,7 +2870,8 @@ def sync_rpo(
     Synchronizuje RPO2 do lokálnej databázy.
 
     max_records:
-        Testovací limit. None znamená bez limitu.
+        Limit načítaných RPO záznamov. Synchronizácia sa zastaví
+        až po celej stránke, aby sa dala bezpečne obnoviť.
 
     only_ids:
         Sync endpoint vráti iba ID a následne sa sťahuje detail.
@@ -2725,6 +2910,8 @@ def sync_rpo(
     else:
         state.sync_started_at = current_run_started_at
         state.processed_records = 0
+        state.fetched_records = 0
+        state.skipped_records = 0
         state.next_url = None
 
         url = create_initial_sync_url(
@@ -2736,7 +2923,9 @@ def sync_rpo(
     state.last_error = None
     db.session.commit()
 
-    run_processed = 0
+    run_fetched = 0
+    run_imported = 0
+    run_skipped = 0
     page_number = 0
 
     try:
@@ -2762,6 +2951,8 @@ def sync_rpo(
             next_url = extract_next_url(response)
 
             for sync_record in records:
+                run_fetched += 1
+                state.fetched_records += 1
                 full_record = sync_record
 
                 if only_ids:
@@ -2776,40 +2967,36 @@ def sync_rpo(
                 company = upsert_rpo_record(full_record)
 
                 if company is None:
+                    run_skipped += 1
+                    state.skipped_records += 1
                     continue
 
-                run_processed += 1
+                run_imported += 1
                 state.processed_records += 1
 
-                if run_processed % commit_every == 0:
+                if run_fetched % commit_every == 0:
                     db.session.commit()
-
-                if (
-                    max_records is not None
-                    and run_processed >= max_records
-                ):
-                    # Zámerne neoznačíme synchronizáciu ako dokončenú.
-                    # Pri testovacom limite sa nedá bezpečne pokračovať
-                    # uprostred jednej stránky len pomocou next_url.
-                    db.session.commit()
-
-                    state.status = "partial"
-                    state.last_error = (
-                        "Synchronizácia zastavená cez max_records. "
-                        "Testovací beh nie je plný checkpoint."
-                    )
-                    db.session.commit()
-
-                    return {
-                        "status": "partial",
-                        "processed": run_processed,
-                        "page": page_number,
-                        "next_url": next_url,
-                    }
 
             # Celá stránka bola bezpečne uložená.
             state.next_url = next_url
             db.session.commit()
+
+            if max_records is not None and run_fetched >= max_records:
+                state.status = "partial"
+                state.last_error = (
+                    "Synchronizácia zastavená cez max_records po celej "
+                    "stránke. Ďalší beh bezpečne pokračuje z next_url."
+                )
+                db.session.commit()
+
+                return {
+                    "status": "partial",
+                    "fetched": run_fetched,
+                    "imported": run_imported,
+                    "skipped": run_skipped,
+                    "page": page_number,
+                    "next_url": next_url,
+                }
 
             url = next_url
 
@@ -2830,7 +3017,9 @@ def sync_rpo(
 
         return {
             "status": "success",
-            "processed": run_processed,
+            "fetched": run_fetched,
+            "imported": run_imported,
+            "skipped": run_skipped,
             "pages": page_number,
             "completed_at": datetime_to_iso(completed_at),
         }

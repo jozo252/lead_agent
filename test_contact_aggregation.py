@@ -4,9 +4,12 @@ import unittest
 from services.rpo_sync import (
     aggregate_company_contacts,
     build_derived_website_url,
+    build_derived_website_urls,
     is_directory_domain,
+    is_foreign_country_domain,
     score_search_result,
     select_best_company_contacts,
+    strip_legal_suffix,
 )
 
 
@@ -16,6 +19,71 @@ class AggregateCompanyContactsTests(unittest.TestCase):
             ico="48061999",
             official_name="Elektroinštalácie Poprad, s.r.o.",
             municipality="Poprad",
+        )
+
+    def test_derives_domain_after_full_sro_suffix(self):
+        company = SimpleNamespace(
+            official_name="ANTES GM, spol. s r.o.",
+        )
+
+        self.assertEqual(strip_legal_suffix(company.official_name), "ANTES GM")
+        self.assertEqual(
+            build_derived_website_url(company),
+            "https://antesgm.sk",
+        )
+
+    def test_includes_legal_form_domain_variant(self):
+        company = SimpleNamespace(official_name="AJAP s.r.o.")
+
+        self.assertEqual(
+            build_derived_website_urls(company),
+            ["https://ajap.sk", "https://ajapsro.sk"],
+        )
+
+    def test_includes_local_variant_without_slovakia_in_name(self):
+        company = SimpleNamespace(official_name="DATS Slovakia, s.r.o.")
+
+        self.assertEqual(
+            build_derived_website_urls(company),
+            [
+                "https://datsslovakia.sk",
+                "https://datsslovakiasro.sk",
+                "https://dats.sk",
+            ],
+        )
+
+    def test_excludes_foreign_country_domains_but_keeps_generic_domains(self):
+        self.assertTrue(is_foreign_country_domain("https://ajap.pt"))
+        self.assertTrue(is_foreign_country_domain("https://example.de"))
+        self.assertFalse(is_foreign_country_domain("https://ajapsro.sk"))
+        self.assertFalse(is_foreign_country_domain("https://example.com"))
+
+    def test_ico_verified_email_domain_becomes_company_website(self):
+        company = SimpleNamespace(
+            ico="36294781",
+            official_name="ANTES GM, spol. s r.o.",
+            municipality="Trenčín",
+        )
+        results = [
+            {
+                "url": "https://www.infoma.sk/firma/4214",
+                "title": "ANTES GM, spol. s r.o.",
+                "description": (
+                    "IČO: 36294781, e-mail: antesgm@antesgm.sk, "
+                    "telefón: 032 658 25 23"
+                ),
+            }
+        ]
+
+        aggregated = aggregate_company_contacts(company, results)
+
+        self.assertEqual(
+            aggregated["websites"][0]["value"],
+            "https://antesgm.sk",
+        )
+        self.assertEqual(
+            aggregated["websites"][0]["reason"],
+            "ico_verified_email_domain",
         )
 
     def test_catalog_domain_is_not_treated_as_company_website(self):

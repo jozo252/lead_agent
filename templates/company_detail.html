@@ -9,6 +9,10 @@
         <h2 class="page-title">{{ company.official_name or "Bez názvu" }}</h2>
         <p class="page-subtitle">IČO: {{ company.ico or "—" }} · {{ company.municipality or "obec neznáma" }}</p>
     </div>
+    <form method="post" action="{{ url_for('main.analyze_company_website', company_id=company.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button class="btn btn-secondary" type="submit">Analyzovať web cez AI</button>
+    </form>
 </div>
 
 <div class="grid grid-2 section-gap">
@@ -24,6 +28,8 @@
             <dt>IČO</dt><dd>{{ company.ico or "—" }}</dd>
             <dt>Stav</dt><dd>{{ company.status or "—" }}</dd>
             <dt>Právna forma</dt><dd>{{ company.legal_form or "—" }}</dd>
+            <dt>SK NACE</dt><dd>{% if company.sk_nace_code %}{{ company.sk_nace_code }}{% if company.sk_nace_name %} · {{ company.sk_nace_name }}{% endif %}{% else %}—{% endif %}</dd>
+            <dt>Počet zamestnancov</dt><dd>{{ company.employee_count if company.employee_count is not none else "—" }}</dd>
             <dt>Ulica</dt><dd>{{ company.street or "—" }}</dd>
             <dt>PSČ</dt><dd>{{ company.postal_code or "—" }}</dd>
             <dt>Obec</dt><dd>{{ company.municipality or "—" }}</dd>
@@ -68,6 +74,99 @@
         </div>
     </section>
 </div>
+
+<section class="card section-gap outreach-card">
+    <div class="card-header">
+        <div>
+            <h3 class="card-title">Oslovenie firmy</h3>
+            <p class="card-description">Odoslanie sa uloží do CRM spolu s follow-upom.</p>
+        </div>
+        {% if outreach_lead %}
+            <a class="btn btn-secondary btn-small" href="{{ url_for('main.lead_detail', lead_id=outreach_lead.id) }}">Otvoriť CRM</a>
+        {% endif %}
+    </div>
+    {% if email_contacts %}
+        <form method="post" action="{{ url_for('main.send_company_outreach', company_id=company.id) }}" class="outreach-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <label>
+                E-mail príjemcu
+                <select name="email" required>
+                    {% for contact in email_contacts %}
+                        <option value="{{ contact.value }}">{{ contact.value }}{% if contact.is_primary %} · primárny{% endif %}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <div class="outreach-industry-grid">
+                <label>
+                    Odvetvie ponuky
+                    <select name="industry">
+                        <option value="">Vyber odvetvie</option>
+                        {% for industry in outreach_industries %}
+                            <option value="{{ industry }}" {% if outreach_lead and outreach_lead.work_type == industry %}selected{% endif %}>{{ industry }}</option>
+                        {% endfor %}
+                        <option value="Vlastné">Vlastné</option>
+                    </select>
+                </label>
+                <label>
+                    Vlastné odvetvie
+                    <input type="text" name="custom_industry" maxlength="100" placeholder="Napr. montáže FVE">
+                </label>
+            </div>
+            <label>
+                Predmet
+                <input type="text" name="subject" value="Možnosť spolupráce" required>
+            </label>
+            <label>
+                Text e-mailu
+                <textarea name="message" rows="9" required placeholder="Napíš krátke personalizované oslovenie.">{{ outreach_lead.suggested_message if outreach_lead and outreach_lead.suggested_message else '' }}</textarea>
+            </label>
+            <div class="outreach-actions">
+                <label>
+                    Follow-up
+                    <input type="date" name="follow_up_at" value="{{ default_follow_up }}">
+                </label>
+                <div class="actions">
+                    <button type="submit" class="btn btn-secondary" formaction="{{ url_for('main.generate_company_outreach', company_id=company.id) }}" formnovalidate>Vygenerovať návrh</button>
+                    <button type="submit" onclick="return confirm('Naozaj chceš odoslať e-mail vybranej firme?');">Odoslať e-mail</button>
+                </div>
+            </div>
+        </form>
+    {% else %}
+        <p class="muted">Firma nemá uložený e-mail, preto ju zatiaľ nie je možné osloviť.</p>
+    {% endif %}
+</section>
+
+<section class="card section-gap">
+    <div class="card-header">
+        <div>
+            <h3 class="card-title">Obchodný profil</h3>
+            <p class="card-description">Polia sa doplnia z webu a AI analýzy, keď budú mať zdrojové dôkazy.</p>
+        </div>
+    </div>
+    <dl class="company-data">
+        <dt>Typ firmy</dt><dd>{{ company.company_type or "—" }}</dd>
+        <dt>Služby</dt><dd>{{ company.services|join(", ") if company.services else "—" }}</dd>
+        <dt>Trhy</dt><dd>{{ company.markets|join(", ") if company.markets else "—" }}</dd>
+        <dt>Pôsobí v zahraničí</dt><dd>{% if company.works_abroad is none %}—{% elif company.works_abroad %}Áno{% else %}Nie{% endif %}</dd>
+        <dt>Regióny</dt><dd>{{ company.regions|join(", ") if company.regions else "—" }}</dd>
+        <dt>Potreba subdodávky</dt><dd>{{ company.subcontractor_need or "—" }}</dd>
+        <dt>Relevantná na oslovenie</dt><dd>{% if company.outreach_relevant is none %}—{% elif company.outreach_relevant %}Áno{% else %}Nie{% endif %}</dd>
+        <dt>Dôvod</dt><dd>{{ company.analysis_reason or "—" }}</dd>
+        <dt>Analyzované</dt><dd>{{ company.website_analyzed_at or "—" }}</dd>
+    </dl>
+    {% if company.analysis_evidence %}
+            <h4>Dôkazy z webu</h4>
+            <ul class="activity-list">
+                {% for evidence in company.analysis_evidence %}
+                    {% if evidence.quote and evidence.source_url %}
+                        <li>{{ evidence.quote }} <a class="small" href="{{ evidence.source_url }}" target="_blank" rel="noopener">Zdroj</a></li>
+                    {% else %}
+                        <li>{{ evidence }}</li>
+                    {% endif %}
+                {% endfor %}
+        </ul>
+    {% endif %}
+</section>
 
 <section class="card section-gap">
     <div class="card-header">
@@ -127,12 +226,42 @@
         gap: 10px;
     }
 
+    .outreach-form {
+        display: grid;
+        gap: 14px;
+    }
+
+    .outreach-form label {
+        display: grid;
+        gap: 7px;
+    }
+
+    .outreach-actions {
+        align-items: end;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 14px;
+        justify-content: space-between;
+    }
+
+    .outreach-industry-grid {
+        display: grid;
+        gap: 14px;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    @media (max-width: 640px) {
+        .outreach-industry-grid {
+            grid-template-columns: 1fr;
+        }
+    }
+
     .contact-item,
     .source-item {
         padding: 12px;
         border: 1px solid var(--border-soft);
         border-radius: 10px;
-        background: rgba(15, 23, 42, 0.45);
+        background: var(--panel-soft);
     }
 
     .contact-value {
@@ -148,13 +277,15 @@
     }
 
     .verified-badge {
-        border-color: rgba(34, 197, 94, 0.45);
-        color: #86efac;
+        background: #ecfdf3;
+        border-color: #bbf7d0;
+        color: #15803d;
     }
 
     .candidate-badge {
-        border-color: rgba(245, 158, 11, 0.45);
-        color: #fcd34d;
+        background: #fff7ed;
+        border-color: #fed7aa;
+        color: #b45309;
     }
 
     .activity-list {
@@ -175,8 +306,9 @@
         overflow: auto;
         padding: 12px;
         border-radius: 10px;
-        background: #020617;
-        color: #cbd5e1;
+        background: var(--panel-soft);
+        border: 1px solid var(--border-soft);
+        color: var(--text);
         white-space: pre-wrap;
         overflow-wrap: anywhere;
         font-size: 12px;

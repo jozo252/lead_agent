@@ -7,12 +7,13 @@
 <div class="page-header">
     <div>
         <h1>Prijaté emaily</h1>
-        <p>Správy prijaté cez IMAP / Postmark. Odtiaľto vieš rovno pripraviť odpoveď.</p>
+        <p>Zobrazené sú iba odpovede od firiem, ktoré už máš uložené v CRM.</p>
     </div>
 
-    <a href="{{ url_for('main.inbox') }}" class="btn btn-primary">
-        Načítať nové emaily
-    </a>
+    <form method="post" action="{{ url_for('main.sync_inbox') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="submit" class="btn btn-primary">Načítať nové emaily</button>
+    </form>
 </div>
 
 <div class="inbox-layout">
@@ -98,14 +99,28 @@
                 </div>
             </div>
 
-            <div class="email-body-box">
-                {% if selected_email.text_body %}
-                    {{ selected_email.text_body | replace('\n', '<br>') | safe }}
-                {% elif selected_email.html_body %}
-                    {{ selected_email.html_body | safe }}
-                {% else %}
-                    <em>Správa nemá textový obsah.</em>
+            <div class="conversation-header">
+                <h3>Celá konverzácia</h3>
+                {% if selected_email.lead %}
+                    <a class="btn btn-secondary btn-small" href="{{ url_for('main.lead_detail', lead_id=selected_email.lead.id) }}">Otvoriť CRM lead</a>
                 {% endif %}
+            </div>
+
+            <div class="conversation-thread">
+                {% for message in conversation_messages %}
+                    <article class="thread-message thread-{{ message.direction }}">
+                        <div class="thread-meta">
+                            <strong>{% if message.direction == 'outbound' %}Ty → {{ message.recipient }}{% else %}{{ message.sender or 'Firma' }}{% endif %}</strong>
+                            <span>{{ message.sent_at.strftime('%d.%m.%Y %H:%M') if message.sent_at else '' }}</span>
+                        </div>
+                        <div class="thread-subject">{{ message.subject or '(bez predmetu)' }}</div>
+                        <div class="thread-body">{{ message.body or 'Správa nemá textový obsah.' }}</div>
+                    </article>
+                {% else %}
+                    <div class="email-body-box">
+                        {{ selected_email.text_body or 'Správa nemá textový obsah.' }}
+                    </div>
+                {% endfor %}
             </div>
 
             <hr>
@@ -116,7 +131,7 @@
                     <h3>Odpoveď</h3>
 
                     <form method="POST"
-                          action="{{ url_for('main.generate_reply', email_id=selected_email.id) }}">
+                          action="{{ url_for('main.generate_reply', reply_id=selected_email.id) }}">
                         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                         <button type="submit" class="btn btn-secondary">
                             Vygenerovať AI odpoveď
@@ -125,27 +140,11 @@
                 </div>
 
                 <form method="POST"
-                      action="{{ url_for('main.send_reply', email_id=selected_email.id) }}">
+                      action="{{ url_for('main.send_reply', reply_id=selected_email.id) }}">
 
                     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 
-                    <div class="form-group">
-                        <label>Komu</label>
-                        <input type="email"
-                               name="to_email"
-                               value="{{ selected_email.from_email or '' }}"
-                               class="form-control"
-                               required>
-                    </div>
-
-                    <div class="form-group">
-                        <label>Predmet</label>
-                        <input type="text"
-                               name="subject"
-                               value="Re: {{ selected_email.subject or '' }}"
-                               class="form-control"
-                               required>
-                    </div>
+                    <p class="muted small">Odpoveď sa odošle na {{ selected_email.from_email or 'adresu odosielateľa' }} a zostane v pôvodnom e-mailovom vlákne.</p>
 
                     <div class="form-group">
                         <label>Text odpovede</label>
@@ -289,29 +288,34 @@ function copyReply() {
     display: inline-block;
     padding: 4px 8px;
     border-radius: 999px;
-    background: #374151;
-    color: #d1d5db;
+    background: var(--panel-soft);
+    border: 1px solid var(--border-soft);
+    color: #475569;
     font-size: 12px;
 }
 
 .badge-new {
-    background: rgba(239, 68, 68, 0.18);
-    color: #fca5a5;
+    background: #fef2f2;
+    border-color: #fecaca;
+    color: #b91c1c;
 }
 
 .badge-ai {
-    background: rgba(245, 158, 11, 0.18);
-    color: #fcd34d;
+    background: #fffbeb;
+    border-color: #fde68a;
+    color: #a16207;
 }
 
 .badge-sent {
-    background: rgba(34, 197, 94, 0.18);
-    color: #86efac;
+    background: #ecfdf3;
+    border-color: #bbf7d0;
+    color: #15803d;
 }
 
 .badge-lead {
-    background: rgba(56, 189, 248, 0.16);
-    color: #7dd3fc;
+    background: var(--accent-soft);
+    border-color: #cfe0ff;
+    color: #1d4ed8;
 }
 
 .email-detail {
@@ -341,6 +345,62 @@ function copyReply() {
     border-radius: 12px;
     padding: 18px;
     line-height: 1.6;
+}
+
+.conversation-header {
+    align-items: center;
+    display: flex;
+    gap: 12px;
+    justify-content: space-between;
+    margin-top: 22px;
+}
+
+.conversation-header h3 {
+    margin: 0;
+}
+
+.conversation-thread {
+    display: grid;
+    gap: 12px;
+    margin-top: 14px;
+}
+
+.thread-message {
+    border: 1px solid var(--border-soft);
+    border-radius: 12px;
+    padding: 14px;
+}
+
+.thread-inbound {
+    background: var(--panel-light);
+}
+
+.thread-outbound {
+    background: rgba(37, 99, 235, 0.07);
+    border-color: rgba(37, 99, 235, 0.24);
+}
+
+.thread-meta {
+    align-items: center;
+    display: flex;
+    gap: 12px;
+    justify-content: space-between;
+}
+
+.thread-meta span {
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.thread-subject {
+    font-weight: 600;
+    margin-top: 8px;
+}
+
+.thread-body {
+    line-height: 1.6;
+    margin-top: 10px;
+    white-space: pre-wrap;
 }
 
 .reply-section {
@@ -410,17 +470,19 @@ function copyReply() {
 
 .btn-primary {
     background: var(--accent);
-    color: #020617;
+    color: #ffffff;
 }
 
 .btn-secondary {
-    background: #334155;
-    color: #e5e7eb;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    color: #334155;
 }
 
 .btn-muted {
-    background: #1f2937;
-    color: #d1d5db;
+    background: var(--panel-soft);
+    border: 1px solid var(--border-soft);
+    color: #475569;
 }
 
 .empty-box,

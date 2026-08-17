@@ -1,6 +1,6 @@
 import unittest
 
-from services.rpo_sync import should_skip_rpo_record
+from services.rpo_sync import normalized_rpo_fields, should_skip_rpo_record
 
 
 class RpoLegalFormFilterTests(unittest.TestCase):
@@ -25,4 +25,26 @@ class RpoLegalFormFilterTests(unittest.TestCase):
 
         self.assertTrue(
             should_skip_rpo_record(normalized, "Zoznam znalcov")
+        )
+
+    def test_extracts_main_sk_nace_activity(self):
+        record = {
+            "data": {
+                "fullNames": [{"value": "Test s.r.o."}],
+                "identifiers": [{"value": "12345678"}],
+                "statisticalCodes": {
+                    "mainActivity": {
+                        "code": "4321",
+                        "value": "Elektroinštalačné práce",
+                    },
+                },
+            },
+        }
+
+        normalized = normalized_rpo_fields(record)
+
+        self.assertEqual(normalized["sk_nace_code"], "4321")
+        self.assertEqual(
+            normalized["sk_nace_name"],
+            "Elektroinštalačné práce",
         )

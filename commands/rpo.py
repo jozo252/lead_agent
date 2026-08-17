@@ -3,7 +3,12 @@ import json
 import click
 from flask.cli import with_appcontext
 
-from services.rpo_sync import enrich_company_contacts, sync_rpo
+from services.rpo_sync import (
+    backfill_rpo_company_fields,
+    enrich_company_contacts,
+    sync_rpo,
+)
+from services.company_web_enrichment import enrich_company_websites
 
 
 @click.command("sync-rpo")
@@ -11,7 +16,10 @@ from services.rpo_sync import enrich_company_contacts, sync_rpo
     "--max-records",
     type=click.IntRange(min=1),
     default=None,
-    help="Zastaví testovací import po zadanom počte záznamov.",
+    help=(
+        "Zastaví import po celej stránke po dosiahnutí limitu "
+        "načítaných RPO záznamov."
+    ),
 )
 @click.option(
     "--only-ids",
@@ -93,7 +101,7 @@ def sync_rpo_command(
     "--include-existing",
     is_flag=True,
     default=False,
-    help="Spracuje aj firmy, ktoré už majú aspoň jeden kontakt.",
+    help="Vynúti opätovnú kontrolu všetkých firiem vrátane už skontrolovaných.",
 )
 @with_appcontext
 def enrich_contacts_command(
@@ -113,4 +121,47 @@ def enrich_contacts_command(
     except Exception as exc:
         raise click.ClickException(str(exc)) from exc
 
+    click.echo(json.dumps(result, ensure_ascii=False, indent=2))
+
+
+@click.command("backfill-rpo-fields")
+@with_appcontext
+def backfill_rpo_fields_command() -> None:
+    """Doplní nové polia z už uložených RPO záznamov."""
+    result = backfill_rpo_company_fields()
+    click.echo(json.dumps(result, ensure_ascii=False, indent=2))
+
+
+@click.command("enrich-websites")
+@click.option(
+    "--max-companies",
+    type=click.IntRange(min=1),
+    default=20,
+    show_default=True,
+    help="Počet firiem, ktorých web sa analyzuje cez AI.",
+)
+@click.option(
+    "--include-analyzed",
+    is_flag=True,
+    default=False,
+    help="Analyzuje aj firmy, ktoré už majú webový profil.",
+)
+@click.option(
+    "--ico",
+    default=None,
+    help="Analyzuje konkrétnu firmu podľa IČO.",
+)
+@with_appcontext
+def enrich_websites_command(
+    max_companies: int,
+    include_analyzed: bool,
+    ico: str | None,
+) -> None:
+    """Doplní obchodný profil firmy z relevantných stránok jej webu."""
+    click.echo("Analyzujem firemné weby cez AI...")
+    result = enrich_company_websites(
+        max_companies=max_companies,
+        include_analyzed=include_analyzed,
+        ico=ico,
+    )
     click.echo(json.dumps(result, ensure_ascii=False, indent=2))

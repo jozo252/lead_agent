@@ -1,17 +1,23 @@
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from reply_generator import generate_reply_to_customer
 
 from flask import Blueprint, render_template, request, redirect, url_for, flash
-from models import Company, EmailReply, Lead, LeadActivity
-from extensions import db, mail, csrf
+from models import (
+    Company,
+    CompanyContact,
+    EmailReply,
+    Lead,
+    LeadActivity,
+    OutboundEmail,
+)
+from extensions import db, mail
 from ai_service import generate_lead_message, analyze_lead
 from flask_mail import Message
 from lead_finder_service import search_places_text, build_search_queries
-from email_checker_service import check_reply_from_sender
+from email_checker_service import check_reply_from_sender, fetch_inbox_messages
 from email_finder import find_email_on_website
-from datetime import datetime
-import requests
-import os
+from services.company_web_enrichment import enrich_company_from_website
+from services.rpo_sync import enrich_company_contacts
 from email.utils import parseaddr
 from sqlalchemy import func, or_
 
@@ -68,14 +74,138 @@ ACTIVITY_TYPES = [
     "Prehraté"
 ]
 
+OUTREACH_INDUSTRIES = ["IT", "Elektro", "Stavby"]
 
-@main_bp.route("/companies")
-def companies():
-    search_term = request.args.get("q", "").strip()
+COMPANIES_PER_PAGE = 100
+TERMINAL_LEAD_STATUSES = {"Vyhraté", "Prehraté", "Nezaujímavé"}
+
+
+def dashboard_metrics():
+    """Return dashboard counts based only on persisted CRM records."""
+    contacted_leads = (
+        db.session.query(func.count(func.distinct(OutboundEmail.lead_id)))
+        .scalar()
+        or 0
+    )
+    responded_contacted_leads = (
+        db.session.query(func.count(func.distinct(EmailReply.lead_id)))
+        .join(OutboundEmail, OutboundEmail.lead_id == EmailReply.lead_id)
+        .filter(EmailReply.lead_id.isnot(None))
+        .scalar()
+        or 0
+    )
+    reply_leads = (
+        db.session.query(func.count(func.distinct(EmailReply.lead_id)))
+        .filter(EmailReply.lead_id.isnot(None))
+        .scalar()
+        or 0
+    )
+
+    return {
+        "companies": Company.query.count(),
+        "companies_with_email": (
+            db.session.query(func.count(func.distinct(CompanyContact.company_id)))
+            .filter(func.lower(CompanyContact.contact_type) == "email")
+            .scalar()
+            or 0
+        ),
+        "contacts": CompanyContact.query.count(),
+        "leads": Lead.query.count(),
+        "contacted_leads": contacted_leads,
+        "replies": reply_leads,
+        "open_follow_ups": Lead.query.filter(
+            Lead.next_follow_up_at.isnot(None),
+            db.func.date(Lead.next_follow_up_at) <= date.today(),
+            or_(
+                Lead.status.is_(None),
+                ~Lead.status.in_(TERMINAL_LEAD_STATUSES),
+            ),
+        ).count(),
+        "reply_rate": (
+            round((responded_contacted_leads / contacted_leads) * 100, 1)
+            if contacted_leads
+            else 0
+        ),
+    }
+
+
+def dashboard_work_queues(limit=8):
+    """Return the most important CRM actions for the current day."""
+    today = date.today()
+    reply_cutoff = datetime.combine(
+        today - timedelta(days=5),
+        datetime.min.time(),
+    )
+    reply_after_contact = (
+        db.session.query(EmailReply.id)
+        .filter(
+            EmailReply.lead_id == Lead.id,
+            EmailReply.received_at >= Lead.last_contacted_at,
+        )
+        .exists()
+    )
+    active_lead = or_(
+        Lead.status.is_(None),
+        ~Lead.status.in_(TERMINAL_LEAD_STATUSES),
+    )
+
+    return {
+        "due_follow_ups": Lead.query.filter(
+            Lead.next_follow_up_at.isnot(None),
+            db.func.date(Lead.next_follow_up_at) <= today,
+            active_lead,
+        ).order_by(
+            Lead.next_follow_up_at,
+            Lead.lead_score.desc(),
+        ).limit(limit).all(),
+        "waiting_for_reply": Lead.query.filter(
+            Lead.status == "Oslovený",
+            Lead.last_contacted_at.isnot(None),
+            Lead.last_contacted_at <= reply_cutoff,
+            ~reply_after_contact,
+        ).order_by(
+            Lead.last_contacted_at,
+            Lead.lead_score.desc(),
+        ).limit(limit).all(),
+        "unanswered_replies": EmailReply.query.filter(
+            EmailReply.lead_id.isnot(None),
+            EmailReply.reply_sent_at.is_(None),
+        ).order_by(
+            EmailReply.received_at.desc(),
+        ).limit(limit).all(),
+    }
+
+
+@main_bp.route("/dashboard")
+def dashboard():
+    return render_template(
+        "dashboard.html",
+        stats=dashboard_metrics(),
+        queues=dashboard_work_queues(),
+    )
+
+
+def company_filters_from_request(source):
+    """Prečíta filtre pre zoznam firiem z query parametrov alebo POST formulára."""
+    return {
+        "q": source.get("q", "").strip(),
+        "sk_nace": source.get("sk_nace", "").strip(),
+        "region": source.get("region", "").strip(),
+        "contacts": source.get("contacts", "").strip(),
+        "website": source.get("website", "").strip(),
+        "analyzed": source.get("analyzed", "").strip(),
+        "relevant": source.get("relevant", "").strip(),
+        "abroad": source.get("abroad", "").strip(),
+        "subcontractor_need": source.get("subcontractor_need", "").strip(),
+    }
+
+
+def filtered_companies_query(filters):
+    """Vráti query firiem zodpovedajúcich filtrom v prehľade."""
     query = Company.query
 
-    if search_term:
-        pattern = f"%{search_term}%"
+    if filters["q"]:
+        pattern = f"%{filters['q']}%"
         query = query.filter(
             or_(
                 Company.ico.ilike(pattern),
@@ -84,20 +214,397 @@ def companies():
             )
         )
 
-    companies = query.order_by(Company.official_name, Company.ico).all()
+    if filters["sk_nace"]:
+        pattern = f"%{filters['sk_nace']}%"
+        query = query.filter(
+            or_(
+                Company.sk_nace_code.ilike(pattern),
+                Company.sk_nace_name.ilike(pattern),
+            )
+        )
+
+    if filters["region"]:
+        query = query.filter(
+            Company.municipality.ilike(f"%{filters['region']}%")
+        )
+
+    if filters["contacts"] == "any":
+        query = query.filter(Company.contacts.any())
+    elif filters["contacts"] == "verified":
+        query = query.filter(
+            Company.contacts.any(CompanyContact.is_verified.is_(True))
+        )
+    elif filters["contacts"] == "candidate":
+        query = query.filter(
+            Company.contacts.any(CompanyContact.is_verified.is_(False))
+        )
+
+    if filters["website"] == "yes":
+        query = query.filter(
+            Company.contacts.any(CompanyContact.contact_type == "website")
+        )
+    elif filters["website"] == "no":
+        query = query.filter(
+            ~Company.contacts.any(CompanyContact.contact_type == "website")
+        )
+
+    if filters["analyzed"] == "yes":
+        query = query.filter(Company.website_analyzed_at.isnot(None))
+    elif filters["analyzed"] == "no":
+        query = query.filter(Company.website_analyzed_at.is_(None))
+
+    if filters["relevant"] == "yes":
+        query = query.filter(Company.outreach_relevant.is_(True))
+
+    if filters["abroad"] == "yes":
+        query = query.filter(Company.works_abroad.is_(True))
+
+    if filters["subcontractor_need"] in {"low", "medium", "high"}:
+        query = query.filter(
+            Company.subcontractor_need == filters["subcontractor_need"]
+        )
+
+    return query
+
+
+def company_contacts_by_type(company, contact_type):
+    """Vráti kontakty firmy zoradené podľa primárnosti a confidence."""
+    return sorted(
+        (
+            contact
+            for contact in company.contacts
+            if contact.contact_type == contact_type
+        ),
+        key=lambda contact: (
+            bool(contact.is_primary),
+            bool(contact.is_verified),
+            contact.confidence_score or 0,
+        ),
+        reverse=True,
+    )
+
+
+def get_or_create_company_lead(company, email, work_type=None):
+    """Vytvorí alebo aktualizuje CRM lead naviazaný na RPO firmu."""
+    lead = Lead.query.filter_by(company_id=company.id).one_or_none()
+    phone_contacts = company_contacts_by_type(company, "phone")
+    website_contacts = company_contacts_by_type(company, "website")
+
+    if lead is None:
+        lead = Lead(
+            company_id=company.id,
+            company_name=company.official_name or company.ico or "Neznáma firma",
+            source="RPO",
+            country=company.country or "Slovensko",
+        )
+        db.session.add(lead)
+
+    lead.email = email
+    lead.phone = phone_contacts[0].value if phone_contacts else lead.phone
+    lead.website = website_contacts[0].value if website_contacts else lead.website
+    lead.address = company.street or lead.address
+    lead.city = company.municipality or lead.city
+    lead.company_segment = company.company_type or lead.company_segment
+    lead.reason_to_contact = company.analysis_reason or lead.reason_to_contact
+    if work_type:
+        lead.work_type = work_type
+
+    return lead
+
+
+@main_bp.route("/companies")
+def companies():
+    filters = company_filters_from_request(request.args)
+    query = filtered_companies_query(filters)
+
+    try:
+        page = int(request.args.get("page", 1))
+    except ValueError:
+        page = 1
+
+    filtered_companies_count = query.count()
+    page_count = max(
+        1,
+        (filtered_companies_count + COMPANIES_PER_PAGE - 1)
+        // COMPANIES_PER_PAGE,
+    )
+    page = max(1, min(page, page_count))
+
+    companies = query.order_by(
+        Company.outreach_relevant.desc(),
+        Company.subcontractor_need.desc(),
+        Company.official_name,
+        Company.ico,
+    ).offset(
+        (page - 1) * COMPANIES_PER_PAGE
+    ).limit(
+        COMPANIES_PER_PAGE
+    ).all()
 
     return render_template(
         "companies.html",
         companies=companies,
-        search_term=search_term,
+        total_companies=Company.query.count(),
+        filtered_companies_count=filtered_companies_count,
+        page=page,
+        page_count=page_count,
+        page_size=COMPANIES_PER_PAGE,
+        active_filters={
+            name: value
+            for name, value in filters.items()
+            if value
+        },
+        filters=filters,
     )
+
+
+@main_bp.route("/companies/enrich-contacts", methods=["POST"])
+def enrich_filtered_company_contacts():
+    """Vyhľadá kontakty len pre firmy vybrané filtrom v prehľade."""
+    filters = company_filters_from_request(request.form)
+
+    try:
+        batch_size = int(request.form.get("batch_size", 25))
+    except ValueError:
+        batch_size = 25
+
+    batch_size = max(1, min(batch_size, 100))
+    selected_companies = filtered_companies_query(filters).filter(
+        Company.contacts_checked_at.is_(None),
+        ~Company.contacts.any(),
+    ).order_by(
+        Company.official_name,
+        Company.ico,
+    ).limit(batch_size).all()
+
+    if not selected_companies:
+        flash(
+            "Pre zvolený filter sa nenašli nové firmy na hľadanie kontaktov.",
+            "error",
+        )
+    else:
+        summary = enrich_company_contacts(
+            companies=selected_companies,
+            delay_seconds=0.5,
+        )
+        flash(
+            "Hľadanie kontaktov: "
+            f"{summary['companies_with_contacts']} firiem s kontaktom, "
+            f"{summary['companies_without_contacts']} bez kontaktu, "
+            f"{len(summary['errors'])} chýb.",
+            "success" if not summary["errors"] else "error",
+        )
+
+    query_params = {
+        name: value
+        for name, value in filters.items()
+        if value
+    }
+    return redirect(url_for("main.companies", **query_params))
+
+
+@main_bp.route("/companies/analyze-websites", methods=["POST"])
+def analyze_filtered_company_websites():
+    """Analyzuje malú dávku firiem, ktorú používateľ vybral filtrami."""
+    filters = company_filters_from_request(request.form)
+
+    try:
+        batch_size = int(request.form.get("batch_size", 10))
+    except ValueError:
+        batch_size = 10
+
+    batch_size = max(1, min(batch_size, 25))
+    include_analyzed = request.form.get("include_analyzed") == "1"
+    query = filtered_companies_query(filters).filter(
+        Company.contacts.any(CompanyContact.contact_type == "website")
+    )
+
+    if not include_analyzed:
+        query = query.filter(Company.website_analyzed_at.is_(None))
+
+    selected_companies = query.order_by(
+        Company.official_name,
+        Company.ico,
+    ).limit(batch_size).all()
+
+    analyzed_companies = 0
+    errors = 0
+
+    for company in selected_companies:
+        try:
+            enrich_company_from_website(company)
+            db.session.commit()
+            analyzed_companies += 1
+        except Exception:
+            db.session.rollback()
+            errors += 1
+
+    if not selected_companies:
+        flash(
+            "Pre zvolený filter sa nenašli firmy s webom pripravené na analýzu.",
+            "error",
+        )
+    else:
+        flash(
+            f"Webová analýza: {analyzed_companies} úspešne, {errors} chýb.",
+            "success" if analyzed_companies else "error",
+        )
+
+    query_params = {
+        name: value
+        for name, value in filters.items()
+        if value
+    }
+    return redirect(url_for("main.companies", **query_params))
 
 
 @main_bp.route("/companies/<int:company_id>")
 def company_detail(company_id):
     company = Company.query.get_or_404(company_id)
 
-    return render_template("company_detail.html", company=company)
+    return render_template(
+        "company_detail.html",
+        company=company,
+        email_contacts=company_contacts_by_type(company, "email"),
+        outreach_lead=Lead.query.filter_by(company_id=company.id).one_or_none(),
+        outreach_industries=OUTREACH_INDUSTRIES,
+        default_follow_up=(date.today() + timedelta(days=5)).isoformat(),
+    )
+
+
+@main_bp.route(
+    "/companies/<int:company_id>/generate-outreach",
+    methods=["POST"],
+)
+def generate_company_outreach(company_id):
+    """Vytvorí editovateľný AI návrh oslovenia pre zvolené odvetvie."""
+    company = Company.query.get_or_404(company_id)
+    email = request.form.get("email", "").strip().lower()
+    industry = request.form.get("industry", "").strip()
+    custom_industry = request.form.get("custom_industry", "").strip()
+    work_type = custom_industry if industry == "Vlastné" else industry
+    available_emails = {
+        contact.value.strip().lower()
+        for contact in company_contacts_by_type(company, "email")
+    }
+
+    if email not in available_emails:
+        flash("Vyber e-mail uložený pri tejto firme.", "error")
+    elif not work_type:
+        flash("Vyber alebo zadaj odvetvie pre oslovenie.", "error")
+    elif len(work_type) > 100:
+        flash("Odvetvie môže mať najviac 100 znakov.", "error")
+    else:
+        try:
+            lead = get_or_create_company_lead(company, email, work_type)
+            lead.suggested_message = generate_lead_message(lead)
+            if not lead.status or lead.status == "Nový":
+                lead.status = "Osloviť"
+            db.session.add(
+                LeadActivity(
+                    lead=lead,
+                    activity_type="Poznámka",
+                    note=(
+                        "AI vygenerovala návrh oslovenia pre odvetvie: "
+                        f"{work_type}."
+                    ),
+                )
+            )
+            db.session.commit()
+            flash("Návrh oslovenia bol vygenerovaný. Pred odoslaním ho skontroluj.", "success")
+        except Exception as exc:
+            db.session.rollback()
+            flash(f"Generovanie oslovenia zlyhalo: {exc}", "error")
+
+    return redirect(url_for("main.company_detail", company_id=company.id))
+
+
+@main_bp.route("/companies/<int:company_id>/send-outreach", methods=["POST"])
+def send_company_outreach(company_id):
+    """Odošle prvé oslovenie z detailu firmy a založí CRM follow-up."""
+    company = Company.query.get_or_404(company_id)
+    email = request.form.get("email", "").strip().lower()
+    subject = request.form.get("subject", "").strip()
+    message_text = request.form.get("message", "").strip()
+    industry = request.form.get("industry", "").strip()
+    custom_industry = request.form.get("custom_industry", "").strip()
+    work_type = custom_industry if industry == "Vlastné" else industry
+    follow_up_raw = request.form.get("follow_up_at", "").strip()
+    available_emails = {
+        contact.value.strip().lower()
+        for contact in company_contacts_by_type(company, "email")
+    }
+
+    if email not in available_emails:
+        flash("Vyber e-mail uložený pri tejto firme.", "error")
+        return redirect(url_for("main.company_detail", company_id=company.id))
+
+    if not subject or not message_text:
+        flash("Predmet aj text e-mailu sú povinné.", "error")
+        return redirect(url_for("main.company_detail", company_id=company.id))
+
+    follow_up_at = None
+    if follow_up_raw:
+        try:
+            follow_up_at = datetime.combine(
+                date.fromisoformat(follow_up_raw),
+                datetime.min.time(),
+            )
+        except ValueError:
+            flash("Neplatný dátum follow-upu.", "error")
+            return redirect(url_for("main.company_detail", company_id=company.id))
+
+    try:
+        lead = get_or_create_company_lead(company, email, work_type)
+        message = Message(subject=subject, recipients=[email], body=message_text)
+        mail.send(message)
+
+        lead.suggested_message = message_text
+        lead.status = "Oslovený"
+        lead.last_contacted_at = datetime.utcnow()
+        lead.next_follow_up_at = follow_up_at
+        db.session.add(
+            LeadActivity(
+                lead=lead,
+                activity_type="Email odoslaný",
+                note=f"Predmet: {subject}\n\n{message_text}",
+            )
+        )
+        db.session.add(
+            OutboundEmail(
+                lead=lead,
+                message_id=message.msgId,
+                recipient=email,
+                subject=subject,
+                body=message_text,
+            )
+        )
+        db.session.commit()
+    except Exception as exc:
+        db.session.rollback()
+        flash(f"E-mail sa nepodarilo odoslať: {exc}", "error")
+        return redirect(url_for("main.company_detail", company_id=company.id))
+
+    flash("E-mail bol odoslaný a follow-up je uložený v CRM.", "success")
+    return redirect(url_for("main.company_detail", company_id=company.id))
+
+
+@main_bp.route("/companies/<int:company_id>/analyze-website", methods=["POST"])
+def analyze_company_website(company_id):
+    company = Company.query.get_or_404(company_id)
+
+    try:
+        result = enrich_company_from_website(company)
+        db.session.commit()
+        flash(
+            f"Web bol analyzovaný z {result['pages']} stránok.",
+            "success",
+        )
+    except Exception as exc:
+        db.session.rollback()
+        flash(f"Analýza webu zlyhala: {exc}", "error")
+
+    return redirect(url_for("main.company_detail", company_id=company.id))
 
 @main_bp.route("/", methods=["GET", "POST"])
 def home():
@@ -327,6 +834,15 @@ def send_email(lead_id):
         )
 
         db.session.add(activity)
+        db.session.add(
+            OutboundEmail(
+                lead=lead,
+                message_id=msg.msgId,
+                recipient=lead.email,
+                subject=subject,
+                body=message_text,
+            )
+        )
         db.session.commit()
 
         flash("Email bol odoslaný a lead označený ako oslovený.", "success")
@@ -428,7 +944,6 @@ def lead_detail(lead_id):
     email_replies = EmailReply.query.filter_by(lead_id=lead.id)\
         .order_by(EmailReply.created_at.desc())\
         .all()
-    print(f"Email replies for lead {lead.id}: {[reply.id for reply in email_replies]}")
     
     return render_template(
         "lead_detail.html",
@@ -582,7 +1097,11 @@ def check_reply(lead_id):
     try:
         reply = check_reply_from_sender(
             sender_email=lead.email,
-            after_datetime=lead.last_contacted_at
+            after_datetime=lead.last_contacted_at,
+            outbound_message_ids=[
+                outbound_email.message_id
+                for outbound_email in lead.outbound_emails
+            ],
         )
 
         if not reply:
@@ -592,6 +1111,19 @@ def check_reply(lead_id):
         subject = reply.get("subject", "")
         received_at = reply.get("received_at")
         body = reply.get("body", "")
+        imap_message_id = reply.get("message_id")
+
+        if (
+            imap_message_id
+            and EmailReply.query.filter_by(
+                imap_message_id=imap_message_id
+            ).first()
+        ):
+            flash("Táto odpoveď už je uložená v CRM.", "info")
+            return redirect(
+                request.referrer
+                or url_for("main.lead_detail", lead_id=lead.id)
+            )
 
         note = f"Predmet: {subject}\n"
 
@@ -606,9 +1138,21 @@ def check_reply(lead_id):
             note=note
         )
 
+        from_name, from_email = parseaddr(reply.get("from", ""))
+        email_reply = EmailReply(
+            lead_id=lead.id,
+            from_email=from_email or lead.email,
+            from_name=from_name or None,
+            subject=subject,
+            text_body=body,
+            received_at=received_at or datetime.utcnow(),
+            imap_message_id=imap_message_id,
+        )
+
         lead.status = "Odpovedal"
 
         db.session.add(activity)
+        db.session.add(email_reply)
         db.session.commit()
 
         flash("Našiel som odpoveď a zapísal ju do histórie.", "success")
@@ -685,56 +1229,6 @@ def find_missing_emails():
 
 
 
-#___________________________________________INBOUND EMAIL CHECKER - TESTOVACIA ROUTA___________________________________________
-@main_bp.route("/postmark/inbound", methods=["POST"])
-@csrf.exempt
-def postmark_inbound():
-    data = request.get_json(silent=True) or {}
-
-    raw_from = data.get("From") or ""
-    parsed_name, parsed_email = parseaddr(raw_from)
-
-    from_email = (parsed_email or raw_from).strip().lower()
-    from_name = data.get("FromName") or parsed_name
-
-    subject = data.get("Subject")
-    text_body = data.get("StrippedTextReply") or data.get("TextBody")
-    html_body = data.get("HtmlBody")
-    postmark_message_id = data.get("MessageID")
-    mailbox_hash = data.get("MailboxHash")
-
-    lead = None
-
-    if from_email:
-        lead = Lead.query.filter(
-            func.lower(func.trim(Lead.email)) == from_email
-        ).first()
-
-    print("POSTMARK FROM RAW:", raw_from)
-    print("POSTMARK FROM EMAIL:", from_email)
-    print("FOUND LEAD:", lead.id if lead else None)
-
-    reply = EmailReply(
-        lead_id=lead.id if lead else None,
-        from_email=from_email,
-        from_name=from_name,
-        subject=subject,
-        text_body=text_body,
-        html_body=html_body,
-        postmark_message_id=postmark_message_id,
-        mailbox_hash=mailbox_hash,
-    )
-
-    db.session.add(reply)
-
-    if lead:
-        lead.status = "Odpovedal"
-
-    db.session.commit()
-
-    return "OK", 200
-
-
 @main_bp.route("/reply/<int:reply_id>/generate", methods=["POST"])
 def generate_reply(reply_id):
     reply = EmailReply.query.get_or_404(reply_id)
@@ -774,32 +1268,46 @@ def send_reply(reply_id):
     if not subject.lower().startswith("re:"):
         subject = "Re: " + subject
 
-    response = requests.post(
-        "https://api.postmarkapp.com/email",
-        headers={
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-            "X-Postmark-Server-Token": os.getenv("POSTMARK_SERVER_TOKEN"),
-        },
-        json={
-            "From": os.getenv("POSTMARK_FROM_EMAIL"),
-            "To": reply.from_email,
-            "Subject": subject,
-            "TextBody": reply_body,
-        },
-        timeout=10,
-    )
+    inbound_message_id = reply.imap_message_id or reply.postmark_message_id
+    extra_headers = {}
 
-    if response.status_code >= 400:
-        flash(f"Nepodarilo sa odoslať odpoveď: {response.text}", "error")
+    if inbound_message_id:
+        extra_headers["In-Reply-To"] = inbound_message_id
+        extra_headers["References"] = inbound_message_id
+
+    try:
+        message = Message(
+            subject=subject,
+            recipients=[reply.from_email],
+            body=reply_body,
+            extra_headers=extra_headers or None,
+        )
+        mail.send(message)
+
+        reply.ai_reply_draft = reply_body
+        reply.reply_sent_at = datetime.utcnow()
+        reply.lead.status = "Odpovedané"
+        db.session.add(
+            OutboundEmail(
+                lead=reply.lead,
+                message_id=message.msgId,
+                recipient=reply.from_email,
+                subject=subject,
+                body=reply_body,
+            )
+        )
+        db.session.add(
+            LeadActivity(
+                lead=reply.lead,
+                activity_type="Email odoslaný",
+                note=f"Odpoveď na: {subject}\n\n{reply_body}",
+            )
+        )
+        db.session.commit()
+    except Exception as exc:
+        db.session.rollback()
+        flash(f"Nepodarilo sa odoslať odpoveď: {exc}", "error")
         return redirect(url_for("main.lead_detail", lead_id=reply.lead.id))
-
-    reply.ai_reply_draft = reply_body
-    reply.reply_sent_at = datetime.utcnow()
-
-    reply.lead.status = "Odpovedané"
-
-    db.session.commit()
 
     flash("Odpoveď bola odoslaná.", "success")
     return redirect(url_for("main.lead_detail", lead_id=reply.lead.id))
@@ -809,7 +1317,9 @@ def send_reply(reply_id):
 
 @main_bp.route("/inbox")
 def inbox():
-    emails = EmailReply.query.order_by(EmailReply.received_at.desc()).all()
+    emails = EmailReply.query.filter(
+        EmailReply.lead_id.isnot(None)
+    ).order_by(EmailReply.received_at.desc()).all()
 
     return render_template(
         "inbox.html",
@@ -820,13 +1330,110 @@ def inbox():
 
 @main_bp.route("/inbox/<int:email_id>")
 def inbox_detail(email_id):
-    emails = EmailReply.query.order_by(EmailReply.received_at.desc()).all()
-    selected_email = EmailReply.query.get_or_404(email_id)
+    emails = EmailReply.query.filter(
+        EmailReply.lead_id.isnot(None)
+    ).order_by(EmailReply.received_at.desc()).all()
+    selected_email = EmailReply.query.filter(
+        EmailReply.id == email_id,
+        EmailReply.lead_id.isnot(None),
+    ).first_or_404()
+    conversation_messages = []
+
+    if selected_email.lead:
+        for outbound_email in selected_email.lead.outbound_emails:
+            conversation_messages.append({
+                "direction": "outbound",
+                "subject": outbound_email.subject,
+                "body": outbound_email.body,
+                "sender": "Ty",
+                "recipient": outbound_email.recipient,
+                "sent_at": outbound_email.sent_at,
+            })
+
+        for inbound_email in selected_email.lead.email_replies:
+            conversation_messages.append({
+                "direction": "inbound",
+                "subject": inbound_email.subject,
+                "body": inbound_email.text_body or inbound_email.html_body,
+                "sender": inbound_email.from_name or inbound_email.from_email,
+                "recipient": None,
+                "sent_at": inbound_email.received_at or inbound_email.created_at,
+            })
+
+        conversation_messages.sort(
+            key=lambda message: message["sent_at"] or datetime.min
+        )
 
     return render_template(
         "inbox.html",
         emails=emails,
-        selected_email=selected_email
+        selected_email=selected_email,
+        conversation_messages=conversation_messages,
     )
+
+
+@main_bp.route("/inbox/sync", methods=["POST"])
+def sync_inbox():
+    """Načíta posledné IMAP správy a uloží iba doteraz neznáme e-maily."""
+    try:
+        messages = fetch_inbox_messages()
+        imported_count = 0
+        skipped_count = 0
+
+        for message in messages:
+            message_id = message["message_id"]
+
+            if not message_id:
+                skipped_count += 1
+                continue
+
+            if EmailReply.query.filter_by(imap_message_id=message_id).first():
+                skipped_count += 1
+                continue
+
+            lead = Lead.query.filter(
+                func.lower(func.trim(Lead.email)) == message["from_email"]
+            ).first()
+
+            if lead is None:
+                skipped_count += 1
+                continue
+
+            reply = EmailReply(
+                lead_id=lead.id,
+                from_email=message["from_email"],
+                from_name=message["from_name"],
+                subject=message["subject"],
+                text_body=message["body"],
+                imap_message_id=message_id,
+                received_at=message["received_at"] or datetime.utcnow(),
+            )
+            db.session.add(reply)
+
+            lead.status = "Odpovedal"
+            db.session.add(
+                LeadActivity(
+                    lead=lead,
+                    activity_type="Odpoveď",
+                    note=(
+                        f"Predmet: {message['subject']}\n\n"
+                        f"{message['body']}"
+                    ),
+                )
+            )
+
+            imported_count += 1
+
+        db.session.commit()
+        flash(
+            f"Inbox: načítané {imported_count} nových správ, "
+            f"preskočené {skipped_count} známych alebo neplatných.",
+            "success",
+        )
+    except Exception as exc:
+        db.session.rollback()
+        flash(f"Inbox sa nepodarilo načítať: {exc}", "error")
+
+    return redirect(url_for("main.inbox"))
 
 

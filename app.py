@@ -3,7 +3,19 @@ import os
 from dotenv import load_dotenv
 
 from extensions import db, migrate, csrf, mail
-from commands.rpo import enrich_contacts_command, sync_rpo_command
+from commands.rpo import (
+    backfill_rpo_fields_command,
+    enrich_contacts_command,
+    enrich_websites_command,
+    sync_rpo_command,
+)
+from commands.email import test_imap_command, test_smtp_command
+from services.schema_migrations import (
+    ensure_company_columns,
+    ensure_email_reply_columns,
+    ensure_lead_columns,
+    ensure_sync_state_columns,
+)
 
 
 def create_app():
@@ -32,12 +44,20 @@ def create_app():
     mail.init_app(app)
     app.cli.add_command(sync_rpo_command)
     app.cli.add_command(enrich_contacts_command)
+    app.cli.add_command(backfill_rpo_fields_command)
+    app.cli.add_command(enrich_websites_command)
+    app.cli.add_command(test_smtp_command)
+    app.cli.add_command(test_imap_command)
     from routes import main_bp
     app.register_blueprint(main_bp)
 
     with app.app_context():
         import models
         db.create_all()
+        ensure_company_columns()
+        ensure_sync_state_columns()
+        ensure_lead_columns()
+        ensure_email_reply_columns()
 
     return app
 

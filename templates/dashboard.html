@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard | LeadFlow{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">Dashboard</h1>
+        <p class="page-subtitle">Aktuálny prehľad údajov uložených v CRM.</p>
+    </div>
+</div>
+
+<section class="grid grid-4" aria-label="Metriky CRM">
+    <article class="stat-card"><span class="number" data-metric="companies">{{ stats.companies }}</span><span class="label">Firmy</span></article>
+    <article class="stat-card"><span class="number" data-metric="companies-with-email">{{ stats.companies_with_email }}</span><span class="label">Firmy s e-mailom</span></article>
+    <article class="stat-card"><span class="number" data-metric="contacts">{{ stats.contacts }}</span><span class="label">Všetky kontakty</span></article>
+    <article class="stat-card"><span class="number" data-metric="leads">{{ stats.leads }}</span><span class="label">Leady</span></article>
+    <article class="stat-card"><span class="number" data-metric="contacted-leads">{{ stats.contacted_leads }}</span><span class="label">Oslovené leady</span></article>
+    <article class="stat-card"><span class="number" data-metric="replies">{{ stats.replies }}</span><span class="label">Odpovede</span></article>
+    <article class="stat-card"><span class="number" data-metric="open-follow-ups">{{ stats.open_follow_ups }}</span><span class="label">Otvorené follow-upy</span></article>
+    <article class="stat-card"><span class="number" data-metric="reply-rate">{{ "%.1f"|format(stats.reply_rate) }} %</span><span class="label">Konverzia odpovede / oslovené</span></article>
+</section>
+
+<section class="dashboard-queues section-gap">
+    <article class="card queue-card">
+        <div class="card-header">
+            <div>
+                <h2 class="card-title">Dnes follow-up</h2>
+                <p class="card-description">Splatné alebo omeškané ďalšie kroky.</p>
+            </div>
+            <span class="badge">{{ queues.due_follow_ups|length }}</span>
+        </div>
+        <div class="queue-list">
+            {% for lead in queues.due_follow_ups %}
+                <a class="queue-item" href="{{ url_for('main.lead_detail', lead_id=lead.id) }}">
+                    <strong>{{ lead.company_name }}</strong>
+                    <span>{{ lead.next_follow_up_at.strftime('%d.%m.%Y') if lead.next_follow_up_at else '' }} · {{ lead.status or 'Bez stavu' }}</span>
+                </a>
+            {% else %}
+                <p class="muted small">Žiadne splatné follow-upy.</p>
+            {% endfor %}
+        </div>
+    </article>
+
+    <article class="card queue-card">
+        <div class="card-header">
+            <div>
+                <h2 class="card-title">Čaká na odpoveď</h2>
+                <p class="card-description">Oslovené pred viac ako 5 dňami bez odpovede.</p>
+            </div>
+            <span class="badge">{{ queues.waiting_for_reply|length }}</span>
+        </div>
+        <div class="queue-list">
+            {% for lead in queues.waiting_for_reply %}
+                <a class="queue-item" href="{{ url_for('main.lead_detail', lead_id=lead.id) }}">
+                    <strong>{{ lead.company_name }}</strong>
+                    <span>Oslovený {{ lead.last_contacted_at.strftime('%d.%m.%Y') if lead.last_contacted_at else '' }}</span>
+                </a>
+            {% else %}
+                <p class="muted small">Žiadny lead zatiaľ nečaká na follow-up.</p>
+            {% endfor %}
+        </div>
+    </article>
+
+    <article class="card queue-card">
+        <div class="card-header">
+            <div>
+                <h2 class="card-title">Nové odpovede</h2>
+                <p class="card-description">Prijaté e-maily bez odoslanej reakcie.</p>
+            </div>
+            <span class="badge">{{ queues.unanswered_replies|length }}</span>
+        </div>
+        <div class="queue-list">
+            {% for reply in queues.unanswered_replies %}
+                <a class="queue-item" href="{{ url_for('main.inbox_detail', email_id=reply.id) }}">
+                    <strong>{{ reply.lead.company_name if reply.lead else reply.from_email }}</strong>
+                    <span>{{ reply.subject or 'Bez predmetu' }}</span>
+                </a>
+            {% else %}
+                <p class="muted small">Žiadne nové odpovede.</p>
+            {% endfor %}
+        </div>
+    </article>
+</section>
+
+<section class="card section-gap">
+    <div class="card-header">
+        <div>
+            <h2 class="card-title">Ako sa metriky počítajú</h2>
+            <p class="card-description">Oslovené leady a odpovede sú jedinečné leady s uloženým e-mailom. Konverzia používa leady s odpoveďou z oslovených leadov. Otvorený follow-up je splatný najneskôr dnes a lead nie je ukončený.</p>
+        </div>
+    </div>
+</section>
+
+<style>
+    .dashboard-queues {
+        display: grid;
+        gap: 18px;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .queue-card { min-width: 0; }
+    .queue-card .card-header { margin-bottom: 12px; }
+    .queue-list { display: grid; gap: 8px; }
+    .queue-item {
+        display: grid;
+        gap: 2px;
+        padding: 10px 11px;
+        border: 1px solid var(--border-soft);
+        border-radius: 10px;
+        background: var(--panel-soft);
+        color: var(--text);
+    }
+    .queue-item:hover { background: var(--panel-hover); color: var(--accent-dark); }
+    .queue-item strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .queue-item span { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    @media (max-width: 1050px) {
+        .dashboard-queues { grid-template-columns: 1fr; }
+    }
+</style>
+{% endblock %}

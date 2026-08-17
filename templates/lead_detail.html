@@ -1,407 +1,101 @@
 {% extends "base.html" %}
 
-{% block title %}{{ lead.company_name }} | LeadHunter CRM{% endblock %}
+{% block title %}{{ lead.company_name }} | LeadFlow{% endblock %}
 
 {% block content %}
-
-<div style="margin-bottom: 20px;">
-    <a href="{{ url_for('main.home') }}" class="btn btn-small">← Späť na dashboard</a>
+<div class="lead-page-header">
+    <div>
+        <a class="small" href="{{ url_for('main.home') }}">← Späť na dashboard</a>
+        <h2 class="page-title">{{ lead.company_name }}</h2>
+        <p class="page-subtitle">{{ lead.address or lead.city or "Lead v CRM" }}</p>
+    </div>
+    <div class="lead-score">
+        <strong>{{ lead.lead_score or 0 }}/5</strong>
+        <span>skóre leadu</span>
+    </div>
 </div>
 
-<div class="grid" style="grid-template-columns: 1fr 420px; gap: 24px; align-items: start;">
-
-    <!-- HLAVNÝ DETAIL -->
-    <section class="card">
-        <div style="display: flex; justify-content: space-between; gap: 18px; align-items: flex-start;">
-            <div>
-                <h2 style="margin-bottom: 6px;">{{ lead.company_name }}</h2>
-
-                {% if lead.address %}
-                    <p class="muted" style="margin: 0;">{{ lead.address }}</p>
-                {% endif %}
-
-                {% if lead.source %}
-                    <div style="margin-top: 10px;">
-                        <span class="badge">{{ lead.source }}</span>
-                    </div>
-                {% endif %}
-            </div>
-
-            <div style="text-align: right;">
-                <div class="score" style="font-size: 24px;">{{ lead.lead_score }}/5</div>
-                <div class="muted">skóre leadu</div>
-            </div>
-        </div>
-
-        <hr style="border: none; border-top: 1px solid var(--border); margin: 22px 0;">
-
-        <!-- KONTAKT -->
-        <div class="grid" style="grid-template-columns: 1fr 1fr; gap: 18px;">
-            <div>
-                <strong>Web</strong><br>
-                {% if lead.website %}
-                    <a href="{{ lead.website }}" target="_blank" class="muted">{{ lead.website }}</a>
-                {% else %}
-                    <span class="muted">—</span>
-                {% endif %}
-            </div>
-
-            <div>
-                <strong>Email</strong><br>
-                {% if lead.email %}
-                    <span class="muted">{{ lead.email }}</span>
-                {% else %}
-                    <span class="muted">—</span>
-                {% endif %}
-            </div>
-
-            <div>
-                <strong>Telefón</strong><br>
-                {% if lead.phone %}
-                    <span class="muted">{{ lead.phone }}</span>
-                {% else %}
-                    <span class="muted">—</span>
-                {% endif %}
-            </div>
-
-            <div>
-                <strong>Lokalita</strong><br>
-                <span class="muted">
-                    {{ lead.city or "—" }}{% if lead.country %}, {{ lead.country }}{% endif %}
-                </span>
-            </div>
-
-            <div>
-                <strong>Follow-up</strong><br>
-                {% if lead.next_follow_up_at %}
-                    <span class="muted">{{ lead.next_follow_up_at.strftime('%d.%m.%Y') }}</span>
-                {% else %}
-                    <span class="muted">—</span>
-                {% endif %}
-            </div>
-
-            <div>
-                <strong>Stav</strong><br>
-                <span class="badge">{{ lead.status or "Nový" }}</span>
-            </div>
-        </div>
-
-        <hr style="border: none; border-top: 1px solid var(--border); margin: 22px 0;">
-
-        <!-- KLASIFIKÁCIA -->
-        <div class="grid" style="grid-template-columns: 1fr 1fr 1fr; gap: 18px;">
-            <div>
-                <strong>Segment</strong><br>
-                {% if lead.company_segment %}
-                    <span class="badge">{{ lead.company_segment }}</span>
-                {% else %}
-                    <span class="muted">—</span>
-                {% endif %}
-            </div>
-
-            <div>
-                <strong>Typ práce</strong><br>
-                {% if lead.work_type %}
-                    <span class="badge">{{ lead.work_type }}</span>
-                {% else %}
-                    <span class="muted">—</span>
-                {% endif %}
-            </div>
-
-            <div>
-                <strong>Podtyp</strong><br>
-                <span class="muted">{{ lead.work_subtype or "—" }}</span>
-            </div>
-        </div>
+<div class="lead-layout">
+    <main class="lead-main">
+        <section class="card">
+            <div class="card-header"><h3 class="card-title">Kontakt a profil</h3><span class="badge">{{ lead.status or "Nový" }}</span></div>
+            <dl class="lead-data">
+                <dt>Web</dt><dd>{% if lead.website %}<a href="{{ lead.website }}" target="_blank" rel="noopener">{{ lead.website }}</a>{% else %}—{% endif %}</dd>
+                <dt>E-mail</dt><dd>{{ lead.email or "—" }}</dd>
+                <dt>Telefón</dt><dd>{{ lead.phone or "—" }}</dd>
+                <dt>Lokalita</dt><dd>{{ lead.city or "—" }}{% if lead.country %}, {{ lead.country }}{% endif %}</dd>
+                <dt>Segment</dt><dd>{{ lead.company_segment or "—" }}</dd>
+                <dt>Odvetvie</dt><dd>{{ lead.work_type or "—" }}{% if lead.work_subtype %} · {{ lead.work_subtype }}{% endif %}</dd>
+                <dt>Follow-up</dt><dd>{% if lead.next_follow_up_at %}{{ lead.next_follow_up_at.strftime('%d.%m.%Y') }}{% else %}—{% endif %}</dd>
+            </dl>
+        </section>
 
         {% if lead.ai_summary %}
-            <div style="margin-top: 24px;">
-                <strong>AI zhrnutie</strong>
-                <div class="card" style="background: #020617; margin-top: 8px; white-space: pre-wrap;">
-                    {{ lead.ai_summary }}
-                </div>
-            </div>
+        <section class="card section-gap"><h3 class="card-title">AI zhrnutie</h3><div class="content-panel">{{ lead.ai_summary }}</div></section>
         {% endif %}
 
         {% if lead.reason_to_contact %}
-            <div style="margin-top: 24px;">
-                <strong>Dôvod oslovenia</strong>
-                <div class="card" style="background: #020617; margin-top: 8px; white-space: pre-wrap;">
-                    {{ lead.reason_to_contact }}
-                </div>
-            </div>
+        <section class="card section-gap"><h3 class="card-title">Dôvod oslovenia</h3><div class="content-panel">{{ lead.reason_to_contact }}</div></section>
         {% endif %}
 
-        {% if lead.suggested_message %}
-            <div style="margin-top: 24px;">
-                <strong>Oslovenie</strong>
-
-                <form method="POST" style="margin-top: 10px;">
-                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-
-                    <label>Predmet emailu</label>
-                    <input type="text" name="email_subject" value="Možnosť spolupráce">
-
-                    <label>Text oslovenia</label>
-                    <textarea name="suggested_message" style="min-height: 220px;">{{ lead.suggested_message }}</textarea>
-
-                    <div class="actions" style="margin-top: 12px;">
-                        <button type="submit"
-                                class="btn-small"
-                                formaction="{{ url_for('main.save_message', lead_id=lead.id) }}">
-                            Uložiť text
-                        </button>
-
-                        {% if lead.email %}
-                            <button type="submit"
-                                    class="btn-small"
-                                    formaction="{{ url_for('main.send_email', lead_id=lead.id) }}"
-                                    onclick="return confirm('Naozaj chceš odoslať email na {{ lead.email }}?');">
-                                Odoslať email
-                            </button>
-                        {% else %}
-                            <span class="muted">Chýba email, nedá sa odoslať.</span>
-                        {% endif %}
-                    </div>
-                </form>
-            </div>
-        {% else %}
-            <div style="margin-top: 24px;">
-                <strong>Oslovenie</strong>
-                <p class="muted">
-                    Zatiaľ nie je vygenerované oslovenie. Použi tlačidlo vpravo.
-                </p>
-            </div>
-        {% endif %}
-
-        <!-- HISTÓRIA KONTAKTOV -->
-        <div style="margin-top: 28px;">
-            <strong>História kontaktov</strong>
-
-            {% if activities %}
-                <div style="margin-top: 10px; display: grid; gap: 10px;">
-                    {% for activity in activities %}
-                        <div class="card" style="background: #020617;">
-                            <div style="display: flex; justify-content: space-between; gap: 16px; align-items: start;">
-                                <div>
-                                    <span class="badge">{{ activity.activity_type }}</span>
-                                </div>
-
-                                <div class="muted" style="font-size: 13px;">
-                                    {{ activity.created_at.strftime('%d.%m.%Y %H:%M') }}
-                                </div>
-                            </div>
-
-                            <div style="margin-top: 10px; white-space: pre-wrap;">
-                                {{ activity.note }}
-                            </div>
-                        </div>
-                    {% endfor %}
-                </div>
-            {% else %}
-                <p class="muted" style="margin-top: 10px;">
-                    Zatiaľ tu nie je žiadna aktivita.
-                </p>
-            {% endif %}
-        </div>
-    </section>
-
-
-    <!-- PRAVÝ PANEL -->
-    <aside class="card">
-        <h2>Akcie</h2>
-
-        <div class="actions" style="display: grid; gap: 10px;">
-            <form method="POST" action="{{ url_for('main.analyze_lead_route', lead_id=lead.id) }}">
+        <section class="card section-gap">
+            <div class="card-header"><h3 class="card-title">Oslovenie</h3></div>
+            {% if lead.suggested_message %}
+            <form method="post" class="lead-form">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                <button type="submit" style="width: 100%;">Vyhodnotiť lead cez AI</button>
+                <label>Predmet<input type="text" name="email_subject" value="Možnosť spolupráce"></label>
+                <label>Text e-mailu<textarea name="suggested_message" rows="9">{{ lead.suggested_message }}</textarea></label>
+                <div class="actions">
+                    <button type="submit" class="btn btn-secondary" formaction="{{ url_for('main.save_message', lead_id=lead.id) }}">Uložiť text</button>
+                    {% if lead.email %}<button type="submit" formaction="{{ url_for('main.send_email', lead_id=lead.id) }}" onclick="return confirm('Odoslať e-mail na {{ lead.email }}?');">Odoslať e-mail</button>{% endif %}
+                </div>
             </form>
+            {% else %}<p class="muted">Najprv vygeneruj alebo doplň návrh oslovenia.</p>{% endif %}
+        </section>
 
-            <form method="POST" action="{{ url_for('main.generate_message', lead_id=lead.id) }}">
-                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                <button type="submit" style="width: 100%;">Vygenerovať oslovenie</button>
-            </form>
-        </div>
-
-        <hr style="border: none; border-top: 1px solid var(--border); margin: 22px 0;">
-
-        <!-- STAV -->
-        <h2>Stav</h2>
-
-        <form method="POST" action="{{ url_for('main.update_lead_status', lead_id=lead.id) }}">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-
-            <label>Zmeniť stav</label>
-            <select name="status">
-                {% for status in lead_statuses %}
-                    <option value="{{ status }}" {% if lead.status == status %}selected{% endif %}>
-                        {{ status }}
-                    </option>
-                {% endfor %}
-            </select>
-
-            <div class="form-actions">
-                <button type="submit" class="btn-small">Uložiť stav</button>
+        <section class="card section-gap">
+            <div class="card-header"><h3 class="card-title">História</h3><span class="badge">{{ activities|length }}</span></div>
+            <div class="timeline">
+            {% for activity in activities %}
+                <article class="timeline-item"><div class="timeline-head"><span class="badge">{{ activity.activity_type }}</span><time>{{ activity.created_at.strftime('%d.%m.%Y %H:%M') }}</time></div><div class="content-panel">{{ activity.note }}</div></article>
+            {% else %}<p class="muted">Zatiaľ tu nie je žiadna aktivita.</p>{% endfor %}
             </div>
-        </form>
+        </section>
+    </main>
 
-        <hr style="border: none; border-top: 1px solid var(--border); margin: 22px 0;">
-
-        <!-- FOLLOW-UP -->
-        <h2>Follow-up</h2>
-
-        <form method="POST" action="{{ url_for('main.set_follow_up', lead_id=lead.id) }}">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-
-            <label>Dátum ďalšieho kontaktu</label>
-            <input type="date"
-                   name="next_follow_up_at"
-                   value="{% if lead.next_follow_up_at %}{{ lead.next_follow_up_at.strftime('%Y-%m-%d') }}{% endif %}">
-
-            <div class="form-actions">
-                <button type="submit" class="btn-small">Uložiť follow-up</button>
+    <aside class="lead-sidebar">
+        <section class="card">
+            <h3 class="card-title">Akcie</h3>
+            <div class="sidebar-actions">
+                <form method="post" action="{{ url_for('main.analyze_lead_route', lead_id=lead.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button type="submit">Vyhodnotiť lead cez AI</button></form>
+                <form method="post" action="{{ url_for('main.generate_message', lead_id=lead.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button type="submit" class="btn btn-secondary">Vygenerovať oslovenie</button></form>
+                <form method="post" action="{{ url_for('main.check_reply', lead_id=lead.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button type="submit" class="btn btn-secondary">Skontrolovať odpoveď</button></form>
             </div>
-        </form>
+        </section>
 
-        <hr style="border: none; border-top: 1px solid var(--border); margin: 22px 0;">
+        <section class="card section-gap"><h3 class="card-title">Stav a follow-up</h3>
+            <form method="post" action="{{ url_for('main.update_lead_status', lead_id=lead.id) }}" class="lead-form"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><label>Stav<select name="status">{% for status in lead_statuses %}<option value="{{ status }}" {% if lead.status == status %}selected{% endif %}>{{ status }}</option>{% endfor %}</select></label><button type="submit" class="btn btn-secondary">Uložiť stav</button></form>
+            <form method="post" action="{{ url_for('main.set_follow_up', lead_id=lead.id) }}" class="lead-form compact-form"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><label>Follow-up<input type="date" name="next_follow_up_at" value="{% if lead.next_follow_up_at %}{{ lead.next_follow_up_at.strftime('%Y-%m-%d') }}{% endif %}"></label><button type="submit" class="btn btn-secondary">Uložiť follow-up</button></form>
+        </section>
 
-        <!-- EMAIL ODPVEDI -->
-        <h2>Email odpovede</h2>
+        <section class="card section-gap"><h3 class="card-title">Odpovede</h3>
+            {% for reply in email_replies %}
+            <article class="reply-card"><strong>{{ reply.subject or "Bez predmetu" }}</strong><p class="muted small">Od: {{ reply.from_name or reply.from_email }} · {% if reply.received_at %}{{ reply.received_at.strftime('%d.%m.%Y %H:%M') }}{% endif %}</p><div class="content-panel">{{ reply.text_body or "Bez textu" }}</div>
+                <form method="post" action="{{ url_for('main.generate_reply', reply_id=reply.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button type="submit" class="btn btn-small btn-secondary">Vygenerovať odpoveď</button></form>
+                {% if reply.ai_reply_draft %}<form method="post" action="{{ url_for('main.send_reply', reply_id=reply.id) }}" class="lead-form"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><label>Návrh odpovede<textarea name="reply_body" rows="7">{{ reply.ai_reply_draft }}</textarea></label><button type="submit" onclick="return confirm('Odoslať túto odpoveď?');">Odoslať odpoveď</button></form>{% endif %}
+            </article>
+            {% else %}<p class="muted">Zatiaľ neprišla žiadna odpoveď.</p>{% endfor %}
+        </section>
 
-       <section class="card" style="margin-top: 24px;">
-    <h2>Odpovede</h2>
-
-    {% if email_replies %}
-        {% for reply in email_replies %}
-            <div class="card" style="margin-bottom: 12px; background: #020617;">
-                <strong>{{ reply.subject or "Bez predmetu" }}</strong>
-
-                <div class="muted" style="margin-top: 6px;">
-                    Od: {{ reply.from_name or "" }} {{ reply.from_email }}
-                </div>
-
-                <div class="muted" style="margin-top: 6px;">
-                    {% if reply.received_at %}
-                        {{ reply.received_at.strftime('%d.%m.%Y %H:%M') }}
-                    {% else %}
-                        Bez dátumu
-                    {% endif %}
-                </div>
-
-                <div style="margin-top: 12px; white-space: pre-wrap;">
-                    {{ reply.text_body }}
-                </div>
-            </div>
-
-            <form method="POST" action="{{ url_for('main.generate_reply', reply_id=reply.id) }}" style="margin-top: 12px;">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-    <button type="submit" class="btn-small">
-        Vygenerovať odpoveď
-    </button>
-</form>
-
-{% if reply.ai_reply_draft %}
-    <form method="POST" action="{{ url_for('main.send_reply', reply_id=reply.id) }}" style="margin-top: 16px;">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-
-        <label>Návrh odpovede</label>
-        <textarea name="reply_body" style="min-height: 180px;">{{ reply.ai_reply_draft }}</textarea>
-
-        <div class="form-actions">
-            <button type="submit" onclick="return confirm('Naozaj chceš odoslať túto odpoveď?');">
-                Odoslať odpoveď
-            </button>
-        </div>
-    </form>
-{% endif %}
-        {% endfor %}
-    {% else %}
-        <p class="muted">Zatiaľ neprišla žiadna odpoveď.</p>
-    {% endif %}
-</section>
-
-
-        <hr style="border: none; border-top: 1px solid var(--border); margin: 22px 0;">
-
-
-        <!-- PRIDAŤ AKTIVITU -->
-        <h2>Pridať aktivitu</h2>
-
-        <form method="POST" action="{{ url_for('main.add_activity', lead_id=lead.id) }}">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-
-            <label>Typ aktivity</label>
-            <select name="activity_type">
-                {% for activity_type in activity_types %}
-                    <option value="{{ activity_type }}">{{ activity_type }}</option>
-                {% endfor %}
-            </select>
-
-            <label>Poznámka</label>
-            <textarea name="note"
-                      placeholder="Napr. Volal som, majiteľ chce poslať ponuku..."
-                      style="min-height: 110px;"></textarea>
-
-            <div class="form-actions">
-                <button type="submit" class="btn-small">Pridať aktivitu</button>
-            </div>
-        </form>
-
-        <hr style="border: none; border-top: 1px solid var(--border); margin: 22px 0;">
-
-        <!-- RÝCHLA ÚPRAVA -->
-        <h2>Rýchla úprava</h2>
-
-        <form method="POST" action="{{ url_for('main.update_lead_basic', lead_id=lead.id) }}">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-
-            <label>Email</label>
-            <input type="email" name="email" value="{{ lead.email or '' }}">
-
-            <label>Telefón</label>
-            <input type="text" name="phone" value="{{ lead.phone or '' }}">
-
-            <label>Segment</label>
-            <select name="company_segment">
-                <option value="">-- vyber --</option>
-                {% for segment in company_segments %}
-                    <option value="{{ segment }}" {% if lead.company_segment == segment %}selected{% endif %}>
-                        {{ segment }}
-                    </option>
-                {% endfor %}
-            </select>
-
-            <label>Typ práce</label>
-            <select name="work_type">
-                <option value="">-- vyber --</option>
-                {% for work_type in work_types %}
-                    <option value="{{ work_type }}" {% if lead.work_type == work_type %}selected{% endif %}>
-                        {{ work_type }}
-                    </option>
-                {% endfor %}
-            </select>
-
-            <label>Podtyp práce</label>
-            <input type="text" name="work_subtype" value="{{ lead.work_subtype or '' }}">
-
-            <label>Skóre</label>
-            <input type="number" name="lead_score" min="1" max="5" value="{{ lead.lead_score or 3 }}">
-
-            <div class="form-actions">
-                <button type="submit" class="btn-small">Uložiť úpravy</button>
-            </div>
-        </form>
-
-        <hr style="border: none; border-top: 1px solid var(--border); margin: 22px 0;">
-
-        <!-- VYMAZAŤ -->
-        <form method="POST"
-              action="{{ url_for('main.delete_lead', lead_id=lead.id) }}"
-              onsubmit="return confirm('Naozaj chceš vymazať tento lead?');">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-            <button type="submit" class="btn-danger" style="width: 100%;">Vymazať lead</button>
-        </form>
+        <section class="card section-gap"><h3 class="card-title">Pridať aktivitu</h3><form method="post" action="{{ url_for('main.add_activity', lead_id=lead.id) }}" class="lead-form"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><label>Typ<select name="activity_type">{% for activity_type in activity_types %}<option value="{{ activity_type }}">{{ activity_type }}</option>{% endfor %}</select></label><label>Poznámka<textarea name="note" rows="4"></textarea></label><button type="submit" class="btn btn-secondary">Pridať aktivitu</button></form></section>
     </aside>
 </div>
 
+<style>
+.lead-page-header { align-items: end; display: flex; gap: 20px; justify-content: space-between; margin-bottom: 22px; }
+.lead-score { background: var(--panel-muted); border: 1px solid var(--border-soft); border-radius: 14px; display: grid; padding: 12px 16px; text-align: center; }.lead-score strong { font-size: 1.35rem; }.lead-score span { color: var(--text-muted); font-size: .8rem; }
+.lead-layout { align-items: start; display: grid; gap: 20px; grid-template-columns: minmax(0, 1fr) 360px; }.lead-main, .lead-sidebar { min-width: 0; }.lead-data { display: grid; gap: 12px 18px; grid-template-columns: 130px minmax(0, 1fr); margin: 0; }.lead-data dt { color: var(--text-muted); }.lead-data dd { margin: 0; overflow-wrap: anywhere; }
+.content-panel { background: var(--panel-muted); border: 1px solid var(--border-soft); border-radius: 10px; margin-top: 10px; padding: 12px; white-space: pre-wrap; }.lead-form { display: grid; gap: 12px; margin-top: 12px; }.lead-form label { display: grid; gap: 6px; }.compact-form { border-top: 1px solid var(--border-soft); margin-top: 18px; padding-top: 18px; }.sidebar-actions { display: grid; gap: 9px; margin-top: 12px; }.sidebar-actions button { width: 100%; }.timeline { display: grid; gap: 12px; }.timeline-item, .reply-card { border: 1px solid var(--border-soft); border-radius: 12px; padding: 14px; }.timeline-head { align-items: center; display: flex; gap: 10px; justify-content: space-between; }.timeline-head time { color: var(--text-muted); font-size: .8rem; }.reply-card + .reply-card { margin-top: 12px; }.reply-card form { margin-top: 12px; }
+@media (max-width: 900px) { .lead-layout { grid-template-columns: 1fr; }.lead-page-header { align-items: start; flex-direction: column; }.lead-sidebar { display: grid; gap: 0; }.lead-data { grid-template-columns: 1fr; gap: 4px; }.lead-data dd { margin-bottom: 10px; } }
+</style>
 {% endblock %}

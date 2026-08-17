@@ -9,6 +9,13 @@ def utcnow() -> datetime:
 class Lead(db.Model):
     id = db.Column(db.Integer, primary_key=True)
 
+    company_id = db.Column(
+        db.Integer,
+        db.ForeignKey("companies.id"),
+        unique=True,
+        nullable=True,
+    )
+
     company_name = db.Column(db.String(200), nullable=False)
     website = db.Column(db.String(300))
     email = db.Column(db.String(200))
@@ -70,6 +77,7 @@ class EmailReply(db.Model):
     html_body = db.Column(db.Text, nullable=True)
 
     postmark_message_id = db.Column(db.String(255), nullable=True)
+    imap_message_id = db.Column(db.String(255), unique=True, nullable=True)
     mailbox_hash = db.Column(db.String(255), nullable=True)
     ai_reply_draft = db.Column(db.Text, nullable=True)
     reply_sent_at = db.Column(db.DateTime, nullable=True)
@@ -78,6 +86,25 @@ class EmailReply(db.Model):
     received_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     lead = db.relationship("Lead", backref="email_replies")
+
+
+class OutboundEmail(db.Model):
+    __tablename__ = "outbound_emails"
+
+    id = db.Column(db.Integer, primary_key=True)
+    lead_id = db.Column(
+        db.Integer,
+        db.ForeignKey("lead.id"),
+        nullable=False,
+        index=True,
+    )
+    message_id = db.Column(db.String(255), unique=True, nullable=False)
+    recipient = db.Column(db.String(255), nullable=False)
+    subject = db.Column(db.String(255), nullable=False)
+    body = db.Column(db.Text, nullable=False)
+    sent_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+
+    lead = db.relationship("Lead", backref="outbound_emails")
 
 
 
@@ -97,6 +124,22 @@ class Company(db.Model):
     official_name = db.Column(db.String(500), nullable=True, index=True)
     status = db.Column(db.String(100), nullable=True)
     legal_form = db.Column(db.String(255), nullable=True)
+    sk_nace_code = db.Column(db.String(20), nullable=True, index=True)
+    sk_nace_name = db.Column(db.String(500), nullable=True)
+    employee_count = db.Column(db.Integer, nullable=True)
+    employee_count_source = db.Column(db.String(100), nullable=True)
+
+    company_type = db.Column(db.String(255), nullable=True, index=True)
+    services = db.Column(db.JSON, nullable=True)
+    markets = db.Column(db.JSON, nullable=True)
+    works_abroad = db.Column(db.Boolean, nullable=True)
+    regions = db.Column(db.JSON, nullable=True)
+    subcontractor_need = db.Column(db.String(20), nullable=True)
+    outreach_relevant = db.Column(db.Boolean, nullable=True, index=True)
+    analysis_reason = db.Column(db.Text, nullable=True)
+    analysis_evidence = db.Column(db.JSON, nullable=True)
+    website_analyzed_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    contacts_checked_at = db.Column(db.DateTime(timezone=True), nullable=True)
 
     municipality = db.Column(db.String(255), nullable=True, index=True)
     postal_code = db.Column(db.String(20), nullable=True)
@@ -255,6 +298,18 @@ class SyncState(db.Model):
     next_url = db.Column(db.Text, nullable=True)
 
     processed_records = db.Column(
+        db.Integer,
+        nullable=False,
+        default=0,
+    )
+
+    fetched_records = db.Column(
+        db.Integer,
+        nullable=False,
+        default=0,
+    )
+
+    skipped_records = db.Column(
         db.Integer,
         nullable=False,
         default=0,

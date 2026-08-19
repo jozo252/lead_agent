@@ -5,17 +5,19 @@ client = OpenAI()
 
 def generate_reply_to_customer(lead, reply):
     prompt = f"""
-Si asistent pre elektrikára / remeselníka, ktorý získava zákazky cez firmy.
+Si asistent človeka, ktorý oslovuje firmy s konkrétnou B2B ponukou,
+návrhom spolupráce, produktom alebo dopytom.
 
 Tvoj cieľ:
 - pripraviť krátku, normálnu a slušnú odpoveď
 - nepísať ako korporát
 - nepôsobiť ako spam
 - odpovedať konkrétne na správu firmy
-- nepreceňovať schopnosti
-- nenavrhovať cenu, ak sa na ňu nepýtajú
+- nevymýšľať schopnosti, referencie ani podmienky
+- nesľubovať cenu, termín, dostupnosť ani záväzok
 - ak firma chce viac info, ponúkni stručné vysvetlenie a možnosť telefonátu / obhliadky
 - ak firma prejavila záujem, smeruj to k ďalšiemu kroku
+- ak odpoveď vyžaduje cenu, termín alebo záväzné rozhodnutie, priprav iba potvrdenie prijatia a navrhni osobný kontakt
 
 Informácie o leade:
 Firma: {lead.company_name}
@@ -41,7 +43,7 @@ Len čistý text emailu.
         messages=[
             {
                 "role": "system",
-                "content": "Si praktický asistent pre remeselníka. Píšeš krátke, konkrétne a prirodzené emaily."
+                "content": "Si praktický B2B asistent. Píšeš krátke, konkrétne a prirodzené e-maily bez záväzkov, ktoré neschválil človek."
             },
             {
                 "role": "user",

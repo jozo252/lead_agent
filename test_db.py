@@ -1,11 +1,12 @@
+import unittest
+
 from app import create_app
 from extensions import db
-from models import Company, CompanySource, CompanyActivity
+from models import Company, CompanyActivity, CompanySource
 from services.rpo_sync import upsert_company
 
-app = create_app()
 
-record = {
+RECORD = {
     "id": 18075205,
     "data": {
         "fullNames": [
@@ -17,6 +18,12 @@ record = {
         "identifiers": [
             {
                 "value": "12345678",
+                "validFrom": "2020-01-01",
+            }
+        ],
+        "legalForms": [
+            {
+                "value": "Spoločnosť s ručením obmedzeným",
                 "validFrom": "2020-01-01",
             }
         ],
@@ -33,40 +40,35 @@ record = {
     },
 }
 
-with app.app_context():
 
-    # vyčisti testovaciu DB
-    CompanyActivity.query.delete()
-    CompanySource.query.delete()
-    Company.query.delete()
-    db.session.commit()
+class CompanyUpsertTests(unittest.TestCase):
+    def setUp(self):
+        self.app = create_app(
+            {
+                "TESTING": True,
+                "SQLALCHEMY_DATABASE_URI": "sqlite://",
+                "WTF_CSRF_ENABLED": False,
+            }
+        )
+        self.app_context = self.app.app_context()
+        self.app_context.push()
+        db.create_all()
 
-    print("=== Pred importom ===")
-    print("Companies:", Company.query.count())
-    print("Sources:", CompanySource.query.count())
-    print("Activities:", CompanyActivity.query.count())
+    def tearDown(self):
+        db.session.remove()
+        db.drop_all()
+        self.app_context.pop()
 
-    company = upsert_company(record)
-    db.session.commit()
+    def test_upsert_is_idempotent(self):
+        upsert_company(RECORD)
+        db.session.commit()
+        upsert_company(RECORD)
+        db.session.commit()
 
-    print("\n=== Po prvom importe ===")
-    print("Companies:", Company.query.count())
-    print("Sources:", CompanySource.query.count())
-    print("Activities:", CompanyActivity.query.count())
+        self.assertEqual(Company.query.count(), 1)
+        self.assertEqual(CompanySource.query.count(), 1)
+        self.assertEqual(CompanyActivity.query.count(), 2)
 
-    print("\nAktivity firmy:")
-    for activity in company.activities:
-        print("-", activity.description)
 
-    # druhý import rovnakého recordu
-    company = upsert_company(record)
-    db.session.commit()
-
-    print("\n=== Po druhom importe ===")
-    print("Companies:", Company.query.count())
-    print("Sources:", CompanySource.query.count())
-    print("Activities:", CompanyActivity.query.count())
-
-    print("\nAktivity firmy:")
-    for activity in company.activities:
-        print("-", activity.description)
+if __name__ == "__main__":
+    unittest.main()

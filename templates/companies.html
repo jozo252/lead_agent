@@ -10,6 +10,10 @@
     </div>
 </div>
 
+{% if filter_error %}
+    <div class="flash flash-error">{{ filter_error }}</div>
+{% endif %}
+
 <section class="card section-gap">
     <form method="get" class="company-filters">
         <input type="search" name="q" value="{{ filters.q }}" placeholder="Názov, IČO alebo obec">
@@ -31,6 +35,27 @@
             <option value="yes" {% if filters.analyzed == "yes" %}selected{% endif %}>Web analyzovaný</option>
             <option value="no" {% if filters.analyzed == "no" %}selected{% endif %}>Web neanalyzovaný</option>
         </select>
+        <select name="email">
+            <option value="">E-mail: všetky</option>
+            <option value="any" {% if filters.email == "any" %}selected{% endif %}>Má e-mail</option>
+            <option value="verified" {% if filters.email == "verified" %}selected{% endif %}>Má overený e-mail</option>
+            <option value="candidate" {% if filters.email == "candidate" %}selected{% endif %}>Má kandidátny e-mail</option>
+            <option value="none" {% if filters.email == "none" %}selected{% endif %}>Bez e-mailu</option>
+        </select>
+        <select name="financials">
+            <option value="">Financie: všetky</option>
+            <option value="yes" {% if filters.financials == "yes" %}selected{% endif %}>Má finančné údaje</option>
+            <option value="no" {% if filters.financials == "no" %}selected{% endif %}>Financie neskontrolované</option>
+        </select>
+        <input type="number" name="min_revenue" min="0" step="1000" value="{{ filters.min_revenue }}" placeholder="Tržby od (€)">
+        <input type="number" name="max_revenue" min="0" step="1000" value="{{ filters.max_revenue }}" placeholder="Tržby do (€)">
+        <select name="contacted">
+            <option value="">Oslovenie: všetky</option>
+            <option value="no" {% if filters.contacted == "no" %}selected{% endif %}>Ešte neoslovené</option>
+            <option value="yes" {% if filters.contacted == "yes" %}selected{% endif %}>Už oslovené</option>
+        </select>
+        <input type="search" name="near" value="{{ filters.near }}" placeholder="V okolí obce, napr. Poprad">
+        <input type="number" name="radius_km" min="1" max="200" step="1" value="{{ filters.radius_km or 20 }}" placeholder="Radius km">
         <select name="relevant">
             <option value="">Relevancia: všetky</option>
             <option value="yes" {% if filters.relevant == "yes" %}selected{% endif %}>Relevantná na oslovenie</option>
@@ -50,6 +75,59 @@
             <a class="btn btn-secondary" href="{{ url_for('main.companies') }}">Zrušiť</a>
         </div>
     </form>
+</section>
+
+<section class="card section-gap batch-analysis-card">
+    <div>
+        <h3 class="card-title">Načítať financie vyfiltrovaných firiem</h3>
+        <p class="muted small">Načíta posledné verejné tržby, výnosy a zisk z oficiálneho Registra účtovných závierok. Jedna dávka má najviac 25 firiem.</p>
+    </div>
+    <form method="post" action="{{ url_for('main.enrich_filtered_company_financials') }}" class="batch-analysis-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        {% for name, value in filters.items() %}
+            <input type="hidden" name="{{ name }}" value="{{ value }}">
+        {% endfor %}
+        <label>
+            Počet firiem
+            <input type="number" name="batch_size" value="10" min="1" max="25">
+        </label>
+        <label class="checkbox-label">
+            <input type="checkbox" name="include_existing" value="1">
+            Obnoviť aj skontrolované
+        </label>
+        <button type="submit" onclick="return confirm('Načítať finančné údaje z RÚZ pre vyfiltrované firmy?');">Načítať financie</button>
+    </form>
+    <p class="muted small location-credit">Radius používa približné súradnice PSČ. Zdroj: <a href="https://www.geonames.org/" target="_blank" rel="noopener">GeoNames</a>, CC BY 4.0.</p>
+</section>
+
+<section class="card section-gap batch-analysis-card campaign-selection-card">
+    <div>
+        <h3 class="card-title">Pridať vyfiltrované firmy do kampane</h3>
+        <p class="muted small">Pridajú sa iba firmy s e-mailom. Duplicitné a potlačené kontakty sa preskočia; všetky návrhy zostanú neschválené.</p>
+    </div>
+    {% if campaigns %}
+        <form method="post" action="{{ url_for('campaigns.add_filtered_recipients_selected') }}" class="batch-analysis-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            {% for name, value in filters.items() %}
+                <input type="hidden" name="{{ name }}" value="{{ value }}">
+            {% endfor %}
+            <label>
+                Kampaň
+                <select name="campaign_id" required>
+                    {% for campaign in campaigns %}
+                        <option value="{{ campaign.id }}" {% if selected_campaign_id == campaign.id %}selected{% endif %}>{{ campaign.name }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label>
+                Najviac firiem
+                <input type="number" name="max_recipients" value="25" min="1" max="100">
+            </label>
+            <button type="submit">Pridať ako návrhy</button>
+        </form>
+    {% else %}
+        <a class="btn" href="{{ url_for('campaigns.new_campaign') }}">Najprv vytvoriť kampaň</a>
+    {% endif %}
 </section>
 
 <section class="card section-gap batch-analysis-card">
@@ -118,6 +196,7 @@
                     <th>Obec</th>
                     <th>Právna forma</th>
                     <th>SK NACE</th>
+                    <th>Tržby</th>
                     <th>Kontakty</th>
                     <th>Status</th>
                     <th>Obchodný profil</th>
@@ -139,6 +218,14 @@
                             {% if company.sk_nace_code %}
                                 <strong>{{ company.sk_nace_code }}</strong>
                                 <div class="muted small">{{ company.sk_nace_name or "" }}</div>
+                            {% else %}—{% endif %}
+                        </td>
+                        <td>
+                            {% if company.annual_revenue is not none %}
+                                <strong>{{ "{:,.0f}".format(company.annual_revenue)|replace(",", " ") }} €</strong>
+                                <div class="muted small">{{ company.financial_year or "rok neznámy" }}</div>
+                            {% elif company.financials_checked_at %}
+                                <span class="muted small">bez verejných údajov</span>
                             {% else %}—{% endif %}
                         </td>
                         <td>
@@ -165,7 +252,7 @@
                     </tr>
                 {% else %}
                     <tr>
-                        <td colspan="10" class="muted">Nenašli sa žiadne firmy pre zadané filtre.</td>
+                        <td colspan="11" class="muted">Nenašli sa žiadne firmy pre zadané filtre.</td>
                     </tr>
                 {% endfor %}
             </tbody>
@@ -180,6 +267,10 @@
         gap: 10px;
         align-items: end;
     }
+
+    .location-credit { margin: 14px 0 0; }
+
+    .campaign-selection-card { border-color: #bfdbfe; }
 
     .filter-actions {
         display: flex;

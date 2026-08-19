@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+
+{% block title %}{{ campaign.name }} | LeadFlow{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <div class="form-actions compact-actions">
+            <span class="badge">{{ offer_types.get(campaign.offer_type, campaign.offer_type) }}</span>
+            <span class="badge">{{ campaign.status }}</span>
+        </div>
+        <h2 class="page-title">{{ campaign.name }}</h2>
+        <p class="page-subtitle">{{ campaign.offer_description }}</p>
+    </div>
+    <div class="form-actions">
+        <a class="btn btn-secondary" href="{{ target_companies_url }}">Vybrať firmy</a>
+        <a class="btn btn-secondary" href="{{ url_for('campaigns.list_campaigns') }}">Všetky kampane</a>
+    </div>
+</div>
+
+<section class="card section-gap status-panel">
+    <div>
+        <h3 class="card-title">Stav kampane</h3>
+        <p class="muted small">Pozastavená alebo ukončená kampaň neposiela ďalšie e-maily.</p>
+    </div>
+    <form method="post" action="{{ url_for('campaigns.update_campaign_status', campaign_id=campaign.id) }}" class="status-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <select name="status">
+            {% for value, label in [('draft', 'Koncept'), ('active', 'Aktívna'), ('paused', 'Pozastavená'), ('completed', 'Ukončená')] %}
+                <option value="{{ value }}" {% if campaign.status == value %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+        </select>
+        <button class="btn btn-secondary" type="submit">Uložiť stav</button>
+    </form>
+</section>
+
+<section class="grid grid-4 section-gap">
+    <article class="stat-card"><span class="number">{{ campaign.recipients|length }}</span><span class="label">Príjemcov</span></article>
+    <article class="stat-card"><span class="number">{{ recipient_counts.get('approved', 0) }}</span><span class="label">Schválených</span></article>
+    <article class="stat-card"><span class="number">{{ campaign.recipients|selectattr('sent_at')|list|length }}</span><span class="label">Odoslaných</span></article>
+    <article class="stat-card"><span class="number">{{ campaign.recipients|selectattr('replied_at')|list|length }}</span><span class="label">Odpovedí</span></article>
+</section>
+
+<section class="card section-gap send-panel">
+    <div>
+        <h3 class="card-title">Odoslať schválené návrhy</h3>
+        <p class="muted small">Dnes odoslané {{ sent_today }} z limitu {{ campaign.daily_limit }}. Neisté alebo potlačené kontakty sa automaticky neposielajú.</p>
+    </div>
+    <form method="post" action="{{ url_for('campaigns.send_approved_recipients', campaign_id=campaign.id) }}" class="send-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="number" name="batch_size" min="1" max="100" value="10" aria-label="Počet e-mailov">
+        <button type="submit" onclick="return confirm('Odoslať schválené e-maily? Táto akcia kontaktuje externé firmy.');">Odoslať schválené</button>
+    </form>
+</section>
+
+{% if campaign.target_filters %}
+<section class="card section-gap">
+    <h3 class="card-title">Posledný výber firiem</h3>
+    <p class="muted small">
+        {% for name, value in campaign.target_filters.items() %}
+            <span class="badge">{{ name }}: {{ value }}</span>
+        {% endfor %}
+    </p>
+</section>
+{% endif %}
+
+<section class="recipient-list">
+    {% for recipient in campaign.recipients %}
+        <article class="card recipient-card">
+            <div class="card-header">
+                <div>
+                    <h3 class="card-title"><a href="{{ url_for('main.company_detail', company_id=recipient.company.id) }}">{{ recipient.company.official_name }}</a></h3>
+                    <p class="card-description">{{ recipient.recipient_email }} · {{ recipient.company.municipality or 'obec neznáma' }} · IČO {{ recipient.company.ico or '—' }}</p>
+                </div>
+                <span class="badge status-{{ recipient.status }}">{{ recipient.status }}</span>
+            </div>
+            {% if recipient.last_error %}<p class="flash flash-warning">{{ recipient.last_error }}</p>{% endif %}
+
+            {% if not recipient.sent_at %}
+                <form method="post" action="{{ url_for('campaigns.update_recipient', campaign_id=campaign.id, recipient_id=recipient.id) }}" class="recipient-form">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <label>Predmet<input name="subject" maxlength="255" required value="{{ recipient.subject }}"></label>
+                    <label>Text<textarea name="body" rows="8" required>{{ recipient.body }}</textarea></label>
+                    <div class="form-actions">
+                        <button class="btn btn-secondary" name="action" value="save" type="submit">Uložiť návrh</button>
+                        <button name="action" value="approve" type="submit">Schváliť</button>
+                    </div>
+                </form>
+            {% else %}
+                <details>
+                    <summary>Zobraziť odoslaný e-mail</summary>
+                    <div class="details-body">
+                        <strong>{{ recipient.subject }}</strong>
+                        <pre>{{ recipient.body }}</pre>
+                    </div>
+                </details>
+                <form method="post" action="{{ url_for('campaigns.update_recipient_outcome', campaign_id=campaign.id, recipient_id=recipient.id) }}" class="outcome-form">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <select name="outcome">
+                        {% for value, label in recipient_outcomes.items() %}
+                            <option value="{{ value }}" {% if recipient.status == value %}selected{% endif %}>{{ label }}</option>
+                        {% endfor %}
+                    </select>
+                    <button class="btn btn-secondary" type="submit">Uložiť výsledok</button>
+                </form>
+            {% endif %}
+        </article>
+    {% else %}
+        <article class="card">
+            <h3 class="card-title">Kampaň ešte nemá firmy</h3>
+            <p class="muted">Otvor databázu, nastav filtre a pridaj najviac 20–30 firiem na prvý test.</p>
+            <a class="btn" href="{{ target_companies_url }}">Vybrať firmy</a>
+        </article>
+    {% endfor %}
+</section>
+
+<style>
+    .compact-actions { margin: 0 0 8px; }
+    .status-panel, .send-panel, .send-form, .outcome-form { display: flex; align-items: end; gap: 12px; justify-content: space-between; }
+    .send-form input { width: 100px; }
+    .recipient-list { display: grid; gap: 18px; }
+    .recipient-form { display: grid; gap: 10px; }
+    .recipient-form label { display: grid; gap: 6px; }
+    .outcome-form { justify-content: flex-start; margin-top: 12px; }
+    .outcome-form select { max-width: 240px; }
+    .status-approved { border-color: #93c5fd; color: #1d4ed8; }
+    .status-sent, .status-interested { border-color: #86efac; color: #15803d; }
+    .status-failed, .status-bounced, .status-opted_out { border-color: #fca5a5; color: #b91c1c; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+    @media (max-width: 720px) { .send-panel, .send-form, .outcome-form { align-items: stretch; flex-direction: column; } }
+</style>
+{% endblock %}

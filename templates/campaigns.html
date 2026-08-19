@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+
+{% block title %}Kampane | LeadFlow{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h2 class="page-title">Kampane</h2>
+        <p class="page-subtitle">Každá ponuka má vlastný výber firiem, návrhy, odoslania a výsledky.</p>
+    </div>
+    <div class="form-actions">
+        <a class="btn btn-secondary" href="{{ url_for('campaigns.suppressions') }}">Suppression zoznam</a>
+        <a class="btn" href="{{ url_for('campaigns.new_campaign') }}">Nová kampaň</a>
+    </div>
+</div>
+
+<section class="grid grid-3">
+    {% for campaign in campaigns %}
+        <article class="card campaign-card">
+            <div class="card-header">
+                <div>
+                    <span class="badge">{{ offer_types.get(campaign.offer_type, campaign.offer_type) }}</span>
+                    <h3 class="campaign-name">{{ campaign.name }}</h3>
+                </div>
+                <span class="badge">{{ campaign.status }}</span>
+            </div>
+            <p>{{ campaign.offer_description }}</p>
+            <div class="campaign-stats">
+                <span><strong>{{ campaign.recipients|length }}</strong> príjemcov</span>
+                <span><strong>{{ campaign.recipients|selectattr('sent_at')|list|length }}</strong> odoslaných</span>
+                <span><strong>{{ campaign.recipients|selectattr('replied_at')|list|length }}</strong> odpovedí</span>
+            </div>
+            <a class="btn btn-secondary" href="{{ url_for('campaigns.campaign_detail', campaign_id=campaign.id) }}">Otvoriť kampaň</a>
+        </article>
+    {% else %}
+        <article class="card">
+            <h3 class="card-title">Zatiaľ nemáš kampaň</h3>
+            <p class="muted">Začni jednou konkrétnou ponukou a malou dávkou firiem.</p>
+            <a class="btn" href="{{ url_for('campaigns.new_campaign') }}">Vytvoriť prvú kampaň</a>
+        </article>
+    {% endfor %}
+</section>
+
+<style>
+    .campaign-card { display: flex; flex-direction: column; gap: 14px; }
+    .campaign-card .card-header { margin: 0; }
+    .campaign-name { margin: 9px 0 0; }
+    .campaign-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .campaign-stats span { padding: 10px; border-radius: 10px; background: var(--panel-soft); color: var(--muted); font-size: 12px; }
+    .campaign-stats strong { display: block; color: var(--text-strong); font-size: 18px; }
+</style>
+{% endblock %}

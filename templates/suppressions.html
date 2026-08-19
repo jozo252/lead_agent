@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+
+{% block title %}Suppression zoznam | LeadFlow{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h2 class="page-title">Suppression zoznam</h2>
+        <p class="page-subtitle">Adresy, domény a firmy, ktoré nesmú dostať ďalšie kampanové oslovenie.</p>
+    </div>
+    <a class="btn btn-secondary" href="{{ url_for('campaigns.list_campaigns') }}">Späť na kampane</a>
+</div>
+
+<section class="card section-gap">
+    <form method="post" class="suppression-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <label>Typ
+            <select name="scope">
+                <option value="email">E-mail</option>
+                <option value="domain">Doména</option>
+                <option value="company">IČO firmy</option>
+            </select>
+        </label>
+        <label>Hodnota<input name="value" required placeholder="info@firma.sk alebo firma.sk"></label>
+        <label>Dôvod<input name="reason" maxlength="500" placeholder="Odhlásenie, nedoručiteľná adresa…"></label>
+        <button type="submit">Pridať pravidlo</button>
+    </form>
+</section>
+
+<section class="card">
+    <div class="table-wrap">
+        <table>
+            <thead><tr><th>Typ</th><th>Hodnota</th><th>Dôvod</th><th>Pridané</th><th></th></tr></thead>
+            <tbody>
+                {% for entry in entries %}
+                    <tr>
+                        <td><span class="badge">{{ entry.scope }}</span></td>
+                        <td>{{ entry.value }}</td>
+                        <td>{{ entry.reason or '—' }}</td>
+                        <td>{{ entry.created_at }}</td>
+                        <td>
+                            <form method="post" action="{{ url_for('campaigns.delete_suppression', suppression_id=entry.id) }}">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                <button class="btn btn-secondary btn-small" type="submit" onclick="return confirm('Odstrániť suppression pravidlo?');">Odstrániť</button>
+                            </form>
+                        </td>
+                    </tr>
+                {% else %}
+                    <tr><td colspan="5" class="muted">Suppression zoznam je prázdny.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<style>
+    .suppression-form { display: grid; grid-template-columns: 170px minmax(220px, 1fr) minmax(260px, 1.5fr) auto; gap: 12px; align-items: end; }
+    .suppression-form label { display: grid; gap: 6px; }
+    @media (max-width: 900px) { .suppression-form { grid-template-columns: 1fr; } }
+</style>
+{% endblock %}

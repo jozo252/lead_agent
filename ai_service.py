@@ -8,18 +8,11 @@ client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 def generate_lead_message(lead):
     prompt = f"""
-Si obchodný asistent pre malú remeselnú firmu.
+Si obchodný asistent pre osobné B2B oslovovanie firiem.
 
 Úloha:
 Napíš krátke, normálne a dôveryhodné oslovenie pre potenciálnu spoluprácu.
 Nesmie to znieť ako spam, nesmie to byť prehnane predajné a nesmie to sľubovať veci, ktoré nevieme splniť.
-
-Kontext o našej firme:
-- vieme robiť elektro práce,
-- stavebné práce,
-- montáže,
-- jednoduché zváračské / kovovýrobné práce,
-- cieľ je nájsť férovú spoluprácu ako subdodávateľ alebo partner pri zákazkách.
 
 Údaje o leade:
 Názov firmy: {lead.company_name}
@@ -28,8 +21,8 @@ Email: {lead.email or "neuvedené"}
 Mesto: {lead.city or "neuvedené"}
 Krajina: {lead.country or "neuvedené"}
 Segment firmy: {lead.company_segment or "neuvedené"}
-Typ práce, ktorú im chceme ponúknuť: {lead.work_type or "neuvedené"}
-Podtyp práce: {lead.work_subtype or "neuvedené"}
+Typ ponuky alebo spolupráce: {lead.work_type or "neuvedené"}
+Spresnenie ponuky: {lead.work_subtype or "neuvedené"}
 Dôvod oslovenia: {lead.reason_to_contact or "neuvedené"}
 
 Pravidlá:
@@ -37,6 +30,7 @@ Pravidlá:
 - tón: slušný, priamy, normálny človek človeku,
 - žiadne korporátne frázy,
 - maximálne 120 slov,
+- používaj iba uvedené fakty a nevymýšľaj schopnosti, referencie ani výsledky,
 - nevnucuj sa,
 - cieľ je navrhnúť spoluprácu alebo krátky telefonát,
 - nepíš predmet emailu, iba telo správy,
@@ -50,7 +44,7 @@ Adam
         messages=[
             {
                 "role": "system",
-                "content": "Si praktický obchodný asistent. Píšeš stručné a prirodzené obchodné správy pre remeselníka."
+                "content": "Si praktický B2B obchodný asistent. Píšeš stručné a prirodzené správy bez vymyslených tvrdení."
             },
             {
                 "role": "user",
@@ -66,16 +60,11 @@ Adam
 
 def analyze_lead(lead):
     prompt = f"""
-Si obchodný analytik pre malú remeselnú firmu.
-
-Naša firma vie robiť:
-- elektro práce,
-- stavebné práce,
-- montáže,
-- jednoduché zváračské / kovovýrobné práce.
+Si obchodný analytik databázy firiem.
 
 Úloha:
-Vyhodnoť, či má zmysel osloviť túto firmu ako potenciálneho partnera alebo zdroj zákaziek.
+Vyhodnoť, či dostupné údaje podporujú oslovenie firmy pre uvedený typ ponuky,
+spolupráce, produktu alebo dopytu. Nevymýšľaj chýbajúce fakty.
 
 Údaje o firme:
 Názov firmy: {lead.company_name}
@@ -96,13 +85,8 @@ Pravidlá hodnotenia:
 - 3 = použiteľný lead
 - 4 = dobrý lead
 - 5 = veľmi dobrý lead, priorita
-
-Vyber typ práce iba z týchto možností:
-- Elektro
-- Stavebné práce
-- Zváranie / kovovýroba
-- Montáže
-- Iné
+- work_type zachovaj z aktuálneho typu práce; ak chýba, použi "Iné"
+- nízke skóre použi, ak chýba jasný dôvod oslovenia alebo dôkaz relevancie
 
 Výstup vráť iba ako čistý JSON bez markdownu:
 {{

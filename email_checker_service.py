@@ -71,6 +71,7 @@ def parse_inbox_message(msg):
     except (TypeError, ValueError):
         pass
 
+    thread_message_ids = extract_thread_message_ids(msg)
     return {
         "from_email": (from_email or from_header).strip().lower(),
         "from_name": from_name or None,
@@ -78,6 +79,7 @@ def parse_inbox_message(msg):
         "body": extract_text_from_email(msg).strip()[:20000],
         "message_id": msg.get("Message-ID", "").strip() or None,
         "received_at": received_at,
+        "thread_message_ids": sorted(thread_message_ids),
     }
 
 
@@ -183,8 +185,8 @@ def check_reply_from_sender(
         raw_email = msg_data[0][1]
         msg = email.message_from_bytes(raw_email)
 
+        thread_message_ids = extract_thread_message_ids(msg)
         if matched_by_thread:
-            thread_message_ids = extract_thread_message_ids(msg)
             if not thread_message_ids.intersection(outbound_message_ids or []):
                 continue
 
@@ -214,6 +216,7 @@ def check_reply_from_sender(
             "body": body.strip()[:2000],
             "message_id": msg.get("Message-ID", "").strip() or None,
             "matched_by_thread": matched_by_thread,
+            "thread_message_ids": sorted(thread_message_ids),
         }
 
     mail.logout()

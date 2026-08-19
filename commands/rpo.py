@@ -9,6 +9,7 @@ from services.rpo_sync import (
     sync_rpo,
 )
 from services.company_web_enrichment import enrich_company_websites
+from services.ruz_financials import enrich_company_financials
 
 
 @click.command("sync-rpo")
@@ -121,6 +122,43 @@ def enrich_contacts_command(
     except Exception as exc:
         raise click.ClickException(str(exc)) from exc
 
+    click.echo(json.dumps(result, ensure_ascii=False, indent=2))
+
+
+@click.command("enrich-financials")
+@click.option(
+    "--max-companies",
+    type=click.IntRange(min=1),
+    default=10,
+    show_default=True,
+    help="Počet firiem, pre ktoré sa načítajú financie z RÚZ.",
+)
+@click.option(
+    "--include-existing",
+    is_flag=True,
+    default=False,
+    help="Vynúti opätovnú kontrolu už spracovaných firiem.",
+)
+@click.option(
+    "--delay",
+    type=click.FloatRange(min=0),
+    default=0.1,
+    show_default=True,
+    help="Pauza medzi firmami v sekundách.",
+)
+@with_appcontext
+def enrich_financials_command(
+    max_companies: int,
+    include_existing: bool,
+    delay: float,
+) -> None:
+    """Doplní posledné verejné finančné údaje z RÚZ."""
+    click.echo("Dopĺňam finančné údaje z RÚZ...")
+    result = enrich_company_financials(
+        max_companies=max_companies,
+        include_existing=include_existing,
+        delay_seconds=delay,
+    )
     click.echo(json.dumps(result, ensure_ascii=False, indent=2))
 
 

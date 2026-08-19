@@ -3,6 +3,7 @@ from reply_generator import generate_reply_to_customer
 
 from flask import Blueprint, render_template, request, redirect, url_for, flash
 from models import (
+    Campaign,
     Company,
     CompanyContact,
     EmailReply,
@@ -18,8 +19,19 @@ from email_checker_service import check_reply_from_sender, fetch_inbox_messages
 from email_finder import find_email_on_website
 from services.company_web_enrichment import enrich_company_from_website
 from services.rpo_sync import enrich_company_contacts
+from services.ruz_financials import enrich_company_financials
+from services.company_filtering import (
+    company_filters_from_source,
+    filtered_companies_query,
+)
+from services.crm import get_or_create_company_lead
+from services.campaigns import (
+    campaign_recipient_for_message_ids,
+    mark_campaign_recipient_replied,
+)
+from services.postal_locations import LocationLookupError
 from email.utils import parseaddr
-from sqlalchemy import func, or_
+from sqlalchemy import false, func, or_
 
 
 main_bp = Blueprint("main", __name__)
@@ -185,88 +197,6 @@ def dashboard():
     )
 
 
-def company_filters_from_request(source):
-    """Prečíta filtre pre zoznam firiem z query parametrov alebo POST formulára."""
-    return {
-        "q": source.get("q", "").strip(),
-        "sk_nace": source.get("sk_nace", "").strip(),
-        "region": source.get("region", "").strip(),
-        "contacts": source.get("contacts", "").strip(),
-        "website": source.get("website", "").strip(),
-        "analyzed": source.get("analyzed", "").strip(),
-        "relevant": source.get("relevant", "").strip(),
-        "abroad": source.get("abroad", "").strip(),
-        "subcontractor_need": source.get("subcontractor_need", "").strip(),
-    }
-
-
-def filtered_companies_query(filters):
-    """Vráti query firiem zodpovedajúcich filtrom v prehľade."""
-    query = Company.query
-
-    if filters["q"]:
-        pattern = f"%{filters['q']}%"
-        query = query.filter(
-            or_(
-                Company.ico.ilike(pattern),
-                Company.official_name.ilike(pattern),
-                Company.municipality.ilike(pattern),
-            )
-        )
-
-    if filters["sk_nace"]:
-        pattern = f"%{filters['sk_nace']}%"
-        query = query.filter(
-            or_(
-                Company.sk_nace_code.ilike(pattern),
-                Company.sk_nace_name.ilike(pattern),
-            )
-        )
-
-    if filters["region"]:
-        query = query.filter(
-            Company.municipality.ilike(f"%{filters['region']}%")
-        )
-
-    if filters["contacts"] == "any":
-        query = query.filter(Company.contacts.any())
-    elif filters["contacts"] == "verified":
-        query = query.filter(
-            Company.contacts.any(CompanyContact.is_verified.is_(True))
-        )
-    elif filters["contacts"] == "candidate":
-        query = query.filter(
-            Company.contacts.any(CompanyContact.is_verified.is_(False))
-        )
-
-    if filters["website"] == "yes":
-        query = query.filter(
-            Company.contacts.any(CompanyContact.contact_type == "website")
-        )
-    elif filters["website"] == "no":
-        query = query.filter(
-            ~Company.contacts.any(CompanyContact.contact_type == "website")
-        )
-
-    if filters["analyzed"] == "yes":
-        query = query.filter(Company.website_analyzed_at.isnot(None))
-    elif filters["analyzed"] == "no":
-        query = query.filter(Company.website_analyzed_at.is_(None))
-
-    if filters["relevant"] == "yes":
-        query = query.filter(Company.outreach_relevant.is_(True))
-
-    if filters["abroad"] == "yes":
-        query = query.filter(Company.works_abroad.is_(True))
-
-    if filters["subcontractor_need"] in {"low", "medium", "high"}:
-        query = query.filter(
-            Company.subcontractor_need == filters["subcontractor_need"]
-        )
-
-    return query
-
-
 def company_contacts_by_type(company, contact_type):
     """Vráti kontakty firmy zoradené podľa primárnosti a confidence."""
     return sorted(
@@ -284,38 +214,19 @@ def company_contacts_by_type(company, contact_type):
     )
 
 
-def get_or_create_company_lead(company, email, work_type=None):
-    """Vytvorí alebo aktualizuje CRM lead naviazaný na RPO firmu."""
-    lead = Lead.query.filter_by(company_id=company.id).one_or_none()
-    phone_contacts = company_contacts_by_type(company, "phone")
-    website_contacts = company_contacts_by_type(company, "website")
-
-    if lead is None:
-        lead = Lead(
-            company_id=company.id,
-            company_name=company.official_name or company.ico or "Neznáma firma",
-            source="RPO",
-            country=company.country or "Slovensko",
-        )
-        db.session.add(lead)
-
-    lead.email = email
-    lead.phone = phone_contacts[0].value if phone_contacts else lead.phone
-    lead.website = website_contacts[0].value if website_contacts else lead.website
-    lead.address = company.street or lead.address
-    lead.city = company.municipality or lead.city
-    lead.company_segment = company.company_type or lead.company_segment
-    lead.reason_to_contact = company.analysis_reason or lead.reason_to_contact
-    if work_type:
-        lead.work_type = work_type
-
-    return lead
-
-
 @main_bp.route("/companies")
 def companies():
-    filters = company_filters_from_request(request.args)
-    query = filtered_companies_query(filters)
+    filters = company_filters_from_source(request.args)
+    selected_campaign_id = request.args.get("campaign_id", type=int)
+    active_filters = {name: value for name, value in filters.items() if value}
+    if selected_campaign_id:
+        active_filters["campaign_id"] = selected_campaign_id
+    filter_error = None
+    try:
+        query = filtered_companies_query(filters)
+    except LocationLookupError as exc:
+        filter_error = str(exc)
+        query = Company.query.filter(false())
 
     try:
         page = int(request.args.get("page", 1))
@@ -349,19 +260,20 @@ def companies():
         page=page,
         page_count=page_count,
         page_size=COMPANIES_PER_PAGE,
-        active_filters={
-            name: value
-            for name, value in filters.items()
-            if value
-        },
+        active_filters=active_filters,
         filters=filters,
+        filter_error=filter_error,
+        campaigns=Campaign.query.filter(
+            Campaign.status.notin_(["completed", "archived"])
+        ).order_by(Campaign.created_at.desc()).all(),
+        selected_campaign_id=selected_campaign_id,
     )
 
 
 @main_bp.route("/companies/enrich-contacts", methods=["POST"])
 def enrich_filtered_company_contacts():
     """Vyhľadá kontakty len pre firmy vybrané filtrom v prehľade."""
-    filters = company_filters_from_request(request.form)
+    filters = company_filters_from_source(request.form)
 
     try:
         batch_size = int(request.form.get("batch_size", 25))
@@ -369,7 +281,13 @@ def enrich_filtered_company_contacts():
         batch_size = 25
 
     batch_size = max(1, min(batch_size, 100))
-    selected_companies = filtered_companies_query(filters).filter(
+    try:
+        query = filtered_companies_query(filters)
+    except LocationLookupError as exc:
+        flash(str(exc), "error")
+        return redirect(url_for("main.companies", **filters))
+
+    selected_companies = query.filter(
         Company.contacts_checked_at.is_(None),
         ~Company.contacts.any(),
     ).order_by(
@@ -403,10 +321,56 @@ def enrich_filtered_company_contacts():
     return redirect(url_for("main.companies", **query_params))
 
 
+@main_bp.route("/companies/enrich-financials", methods=["POST"])
+def enrich_filtered_company_financials():
+    """Načíta financie z RÚZ iba pre firmy vybrané aktuálnym filtrom."""
+    filters = company_filters_from_source(request.form)
+    try:
+        batch_size = int(request.form.get("batch_size", 10))
+    except ValueError:
+        batch_size = 10
+
+    batch_size = max(1, min(batch_size, 25))
+    include_existing = request.form.get("include_existing") == "1"
+    try:
+        query = filtered_companies_query(filters).filter(Company.ico.isnot(None))
+    except LocationLookupError as exc:
+        flash(str(exc), "error")
+        return redirect(url_for("main.companies", **filters))
+    if not include_existing:
+        query = query.filter(Company.financials_checked_at.is_(None))
+
+    selected_companies = query.order_by(
+        Company.official_name,
+        Company.ico,
+    ).limit(batch_size).all()
+
+    if not selected_companies:
+        flash(
+            "Pre zvolený filter sa nenašli nové firmy na finančný enrichment.",
+            "error",
+        )
+    else:
+        summary = enrich_company_financials(
+            companies=selected_companies,
+            delay_seconds=0.1,
+        )
+        flash(
+            "RÚZ financie: "
+            f"{summary['companies_with_financials']} firiem s údajmi, "
+            f"{summary['companies_without_financials']} bez údajov, "
+            f"{len(summary['errors'])} chýb.",
+            "success" if not summary["errors"] else "error",
+        )
+
+    query_params = {name: value for name, value in filters.items() if value}
+    return redirect(url_for("main.companies", **query_params))
+
+
 @main_bp.route("/companies/analyze-websites", methods=["POST"])
 def analyze_filtered_company_websites():
     """Analyzuje malú dávku firiem, ktorú používateľ vybral filtrami."""
-    filters = company_filters_from_request(request.form)
+    filters = company_filters_from_source(request.form)
 
     try:
         batch_size = int(request.form.get("batch_size", 10))
@@ -415,9 +379,13 @@ def analyze_filtered_company_websites():
 
     batch_size = max(1, min(batch_size, 25))
     include_analyzed = request.form.get("include_analyzed") == "1"
-    query = filtered_companies_query(filters).filter(
-        Company.contacts.any(CompanyContact.contact_type == "website")
-    )
+    try:
+        query = filtered_companies_query(filters).filter(
+            Company.contacts.any(CompanyContact.contact_type == "website")
+        )
+    except LocationLookupError as exc:
+        flash(str(exc), "error")
+        return redirect(url_for("main.companies", **filters))
 
     if not include_analyzed:
         query = query.filter(Company.website_analyzed_at.is_(None))
@@ -470,6 +438,67 @@ def company_detail(company_id):
         outreach_industries=OUTREACH_INDUSTRIES,
         default_follow_up=(date.today() + timedelta(days=5)).isoformat(),
     )
+
+
+@main_bp.route(
+    "/companies/<int:company_id>/enrich-contacts",
+    methods=["POST"],
+)
+def enrich_single_company_contacts(company_id):
+    """Vyhľadá alebo obnoví kontakty jednej firmy cez Brave."""
+    company = Company.query.get_or_404(company_id)
+    summary = enrich_company_contacts(
+        companies=[company],
+        delay_seconds=0,
+    )
+
+    if summary["errors"]:
+        flash(
+            "Kontakty sa nepodarilo načítať: "
+            f"{summary['errors'][0]['error']}",
+            "error",
+        )
+    elif summary["companies_with_contacts"]:
+        flash(
+            "Hľadanie kontaktov bolo dokončené: "
+            f"{summary['saved_contacts']} vybraných kontaktov.",
+            "success",
+        )
+    else:
+        flash("Pre firmu sa nenašli použiteľné kontakty.", "error")
+
+    return redirect(url_for("main.company_detail", company_id=company.id))
+
+
+@main_bp.route(
+    "/companies/<int:company_id>/enrich-financials",
+    methods=["POST"],
+)
+def enrich_single_company_financials(company_id):
+    """Načíta alebo obnoví finančné údaje jednej firmy z RÚZ."""
+    company = Company.query.get_or_404(company_id)
+    if not company.ico:
+        flash("Firma nemá IČO potrebné na vyhľadanie v RÚZ.", "error")
+        return redirect(url_for("main.company_detail", company_id=company.id))
+
+    summary = enrich_company_financials(
+        companies=[company],
+        delay_seconds=0,
+    )
+    if summary["errors"]:
+        flash(
+            f"RÚZ financie sa nepodarilo načítať: {summary['errors'][0]['error']}",
+            "error",
+        )
+    elif summary["companies_with_financials"]:
+        flash(
+            f"Finančné údaje za rok {company.financial_year} boli načítané.",
+            "success",
+        )
+    else:
+        flash("RÚZ nemá pre firmu podporované verejné finančné údaje.", "error")
+
+    return redirect(url_for("main.company_detail", company_id=company.id))
 
 
 @main_bp.route(
@@ -1141,6 +1170,11 @@ def check_reply(lead_id):
         from_name, from_email = parseaddr(reply.get("from", ""))
         email_reply = EmailReply(
             lead_id=lead.id,
+            campaign_recipient=campaign_recipient_for_message_ids(
+                reply.get("thread_message_ids"),
+                lead=lead,
+                sender_email=from_email or lead.email,
+            ),
             from_email=from_email or lead.email,
             from_name=from_name or None,
             subject=subject,
@@ -1150,6 +1184,10 @@ def check_reply(lead_id):
         )
 
         lead.status = "Odpovedal"
+        mark_campaign_recipient_replied(
+            email_reply.campaign_recipient,
+            email_reply.received_at,
+        )
 
         db.session.add(activity)
         db.session.add(email_reply)
@@ -1290,6 +1328,7 @@ def send_reply(reply_id):
         db.session.add(
             OutboundEmail(
                 lead=reply.lead,
+                campaign_recipient=reply.campaign_recipient,
                 message_id=message.msgId,
                 recipient=reply.from_email,
                 subject=subject,
@@ -1401,6 +1440,11 @@ def sync_inbox():
 
             reply = EmailReply(
                 lead_id=lead.id,
+                campaign_recipient=campaign_recipient_for_message_ids(
+                    message.get("thread_message_ids"),
+                    lead=lead,
+                    sender_email=message["from_email"],
+                ),
                 from_email=message["from_email"],
                 from_name=message["from_name"],
                 subject=message["subject"],
@@ -1411,6 +1455,10 @@ def sync_inbox():
             db.session.add(reply)
 
             lead.status = "Odpovedal"
+            mark_campaign_recipient_replied(
+                reply.campaign_recipient,
+                reply.received_at,
+            )
             db.session.add(
                 LeadActivity(
                     lead=lead,

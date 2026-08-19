@@ -9,10 +9,22 @@
         <h2 class="page-title">{{ company.official_name or "Bez názvu" }}</h2>
         <p class="page-subtitle">IČO: {{ company.ico or "—" }} · {{ company.municipality or "obec neznáma" }}</p>
     </div>
-    <form method="post" action="{{ url_for('main.analyze_company_website', company_id=company.id) }}">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <button class="btn btn-secondary" type="submit">Analyzovať web cez AI</button>
-    </form>
+    <div class="actions">
+        <form method="post" action="{{ url_for('main.enrich_single_company_contacts', company_id=company.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button class="btn btn-secondary" type="submit">
+                {% if company.contacts_checked_at %}Obnoviť kontakty{% else %}Nájsť kontakty{% endif %}
+            </button>
+        </form>
+        <form method="post" action="{{ url_for('main.enrich_single_company_financials', company_id=company.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button class="btn btn-secondary" type="submit">Načítať financie z RÚZ</button>
+        </form>
+        <form method="post" action="{{ url_for('main.analyze_company_website', company_id=company.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button class="btn btn-secondary" type="submit">Analyzovať web cez AI</button>
+        </form>
+    </div>
 </div>
 
 <div class="grid grid-2 section-gap">
@@ -30,6 +42,12 @@
             <dt>Právna forma</dt><dd>{{ company.legal_form or "—" }}</dd>
             <dt>SK NACE</dt><dd>{% if company.sk_nace_code %}{{ company.sk_nace_code }}{% if company.sk_nace_name %} · {{ company.sk_nace_name }}{% endif %}{% else %}—{% endif %}</dd>
             <dt>Počet zamestnancov</dt><dd>{{ company.employee_count if company.employee_count is not none else "—" }}</dd>
+            <dt>Finančný rok</dt><dd>{{ company.financial_year or "—" }}</dd>
+            <dt>Tržby</dt><dd>{% if company.annual_revenue is not none %}{{ "{:,.0f}".format(company.annual_revenue)|replace(",", " ") }} €{% else %}—{% endif %}</dd>
+            <dt>Celkové výnosy</dt><dd>{% if company.annual_total_income is not none %}{{ "{:,.0f}".format(company.annual_total_income)|replace(",", " ") }} €{% else %}—{% endif %}</dd>
+            <dt>Zisk po zdanení</dt><dd>{% if company.annual_profit is not none %}{{ "{:,.0f}".format(company.annual_profit)|replace(",", " ") }} €{% else %}—{% endif %}</dd>
+            <dt>Financie skontrolované</dt><dd>{{ company.financials_checked_at or "—" }}</dd>
+            <dt>Finančný zdroj</dt><dd>{% if company.financial_source_url %}<a href="{{ company.financial_source_url }}" target="_blank" rel="noopener">RÚZ · závierka {{ company.financial_statement_id }}</a>{% else %}—{% endif %}</dd>
             <dt>Ulica</dt><dd>{{ company.street or "—" }}</dd>
             <dt>PSČ</dt><dd>{{ company.postal_code or "—" }}</dd>
             <dt>Obec</dt><dd>{{ company.municipality or "—" }}</dd>
@@ -47,7 +65,10 @@
         <div class="card-header">
             <div>
                 <h3 class="card-title">Kontakty</h3>
-                <p class="card-description">Kontakty uložené po overení.</p>
+                <p class="card-description">
+                    Kontakty uložené po overení. Posledná kontrola:
+                    {{ company.contacts_checked_at or "nikdy" }}.
+                </p>
             </div>
             <span class="badge">{{ company.contacts|length }}</span>
         </div>

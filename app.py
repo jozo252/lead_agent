@@ -6,25 +6,24 @@ from extensions import db, migrate, csrf, mail
 from commands.rpo import (
     backfill_rpo_fields_command,
     enrich_contacts_command,
+    enrich_financials_command,
     enrich_websites_command,
     sync_rpo_command,
 )
 from commands.email import test_imap_command, test_smtp_command
-from services.schema_migrations import (
-    ensure_company_columns,
-    ensure_email_reply_columns,
-    ensure_lead_columns,
-    ensure_sync_state_columns,
-)
+from commands.locations import import_postal_locations_command
 
 
-def create_app():
+def create_app(config=None):
     load_dotenv()
 
     app = Flask(__name__)
 
     app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "dev-secret-key-change-this")
-    app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///leads.db"
+    app.config["SQLALCHEMY_DATABASE_URI"] = os.environ.get(
+        "DATABASE_URL",
+        "sqlite:///leads.db",
+    )
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
     app.config["MAIL_SERVER"] = os.environ.get("MAIL_SERVER")
     app.config["MAIL_PORT"] = int(os.environ.get("MAIL_PORT", 587))
@@ -38,26 +37,27 @@ def create_app():
     app.config["IMAP_PASSWORD"] = os.environ.get("IMAP_PASSWORD")
     app.config["BRAVE_API_KEY"] = os.environ.get("BRAVE_API_KEY")
     app.config["OPENAI_API_KEY"] = os.environ.get("OPENAI_API_KEY")
+    if config:
+        app.config.update(config)
+
     db.init_app(app)
-    migrate.init_app(app, db)
+    migrate.init_app(app, db, compare_type=True, render_as_batch=True)
     csrf.init_app(app)
     mail.init_app(app)
     app.cli.add_command(sync_rpo_command)
     app.cli.add_command(enrich_contacts_command)
+    app.cli.add_command(enrich_financials_command)
     app.cli.add_command(backfill_rpo_fields_command)
     app.cli.add_command(enrich_websites_command)
     app.cli.add_command(test_smtp_command)
     app.cli.add_command(test_imap_command)
+    app.cli.add_command(import_postal_locations_command)
     from routes import main_bp
     app.register_blueprint(main_bp)
+    from campaign_routes import campaign_bp
+    app.register_blueprint(campaign_bp)
 
-    with app.app_context():
-        import models
-        db.create_all()
-        ensure_company_columns()
-        ensure_sync_state_columns()
-        ensure_lead_columns()
-        ensure_email_reply_columns()
+    import models  # noqa: F401
 
     return app
 

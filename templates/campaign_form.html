@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+
+{% block title %}Nová kampaň | LeadFlow{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h2 class="page-title">Nová kampaň</h2>
+        <p class="page-subtitle">Definuj jednu konkrétnu ponuku. Firmy pridáš až po vytvorení kampane.</p>
+    </div>
+    <a class="btn btn-secondary" href="{{ url_for('campaigns.list_campaigns') }}">Späť</a>
+</div>
+
+<section class="card campaign-form-card">
+    <form method="post" class="campaign-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <div class="grid grid-2 equal-grid">
+            <label>
+                Názov kampane
+                <input name="name" maxlength="200" required value="{{ form.get('name', '') if form else '' }}" placeholder="Napr. Stolári Poprad – automatizácia objednávok">
+            </label>
+            <label>
+                Typ
+                <select name="offer_type" required>
+                    {% for value, label in offer_types.items() %}
+                        <option value="{{ value }}" {% if form and form.get('offer_type') == value %}selected{% endif %}>{{ label }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+        </div>
+        <label>
+            Čo ponúkaš alebo hľadáš
+            <textarea name="offer_description" required placeholder="Konkrétny výsledok pre firmu, nie všeobecný zoznam schopností.">{{ form.get('offer_description', '') if form else '' }}</textarea>
+        </label>
+        <label>
+            Predmet e-mailu
+            <input name="subject_template" maxlength="255" required value="{{ form.get('subject_template', '') if form else '' }}" placeholder="Krátka otázka k spolupráci">
+        </label>
+        <label>
+            Základný text
+            <textarea name="body_template" rows="10" required placeholder="Dobrý deň, {company_name}, ...">{{ form.get('body_template', '') if form else '' }}</textarea>
+        </label>
+        <p class="muted small">Podporované premenné: <code>{company_name}</code>, <code>{municipality}</code>, <code>{ico}</code>. Každý text bude pred odoslaním editovateľný.</p>
+        <label class="limit-field">
+            Denný limit odoslaní
+            <input type="number" name="daily_limit" min="1" max="100" value="{{ form.get('daily_limit', 20) if form else 20 }}">
+        </label>
+        <div class="form-actions">
+            <button type="submit">Vytvoriť kampaň</button>
+        </div>
+    </form>
+</section>
+
+<style>
+    .campaign-form-card { max-width: 900px; }
+    .campaign-form { display: grid; gap: 14px; }
+    .campaign-form label { display: grid; gap: 7px; }
+    .equal-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .limit-field { max-width: 220px; }
+    code { padding: 2px 5px; border-radius: 5px; background: var(--panel-soft); }
+    @media (max-width: 720px) { .equal-grid { grid-template-columns: 1fr; } }
+</style>
+{% endblock %}

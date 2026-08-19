@@ -140,3 +140,26 @@ odpovediam a zákazkám. Až potom škálovať enrichment alebo riešiť predaj 
    reakcie v pôvodnom e-mailovom vlákne.
 5. Zapisovať dôvod, prečo bol kontakt dobrý alebo zlý, aby sa neskôr dalo doladiť
    confidence skóre a výber kandidátnych kontaktov.
+
+## Pokrok — 18. august 2026
+
+- Pribudli samostatné kampane s typom ponuky, šablónou, denným limitom a
+  vlastnou históriou príjemcov; jedna firma môže byť v rôznych kampaniach bez
+  prepísania predchádzajúcej ponuky.
+- Firmy z aktuálneho filtra sa dajú pridať do kampane ako neschválené návrhy.
+  Každý text sa pred odoslaním upraví a manuálne schváli.
+- Odosielanie znovu kontroluje suppression zoznam, rešpektuje denný limit a
+  neistý stav po páde automaticky neopakuje.
+- Suppression podporuje e-mail, doménu aj IČO; nedoručenie a odmietnutie ďalších
+  správ sa dajú zapísať priamo ako výsledok kampane.
+- Databáza firiem má filtre tržieb, stavu oslovenia, kvality e-mailu a radiusu.
+  Radius používa 5 233 poštových lokalít z GeoNames (CC BY 4.0), nie platené
+  geokódovanie jednotlivých adries.
+
+## Najbližší obchodný test
+
+1. Vytvoriť jednu konkrétnu ponuku a nastaviť denný limit najviac 10–20 správ.
+2. Vyfiltrovať 20–30 firiem podľa SK NACE, radiusu a dostupného e-mailu.
+3. Manuálne overiť kontakt a schváliť každý návrh osobitne.
+4. Merať doručenie, odpoveď, pozitívny záujem a dohodnutý ďalší krok.
+5. Chatové ovládanie pridať až po overení tohto deterministického workflow.

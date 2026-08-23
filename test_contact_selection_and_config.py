@@ -151,6 +151,12 @@ class ProductionSecretConfigTests(unittest.TestCase):
         for key, value in values.items():
             self.assertEqual(app.config[key], value)
 
+    def test_openai_model_is_loaded_from_environment(self):
+        with patch.dict(os.environ, {"OPENAI_MODEL": "gpt-5-mini"}, clear=False):
+            app = create_app(self.app_config(SECRET_KEY="test-secret"))
+
+        self.assertEqual(app.config["OPENAI_MODEL"], "gpt-5-mini")
+
 
 if __name__ == "__main__":
     unittest.main()

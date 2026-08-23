@@ -70,6 +70,7 @@ def create_app(config=None):
     app.config["IMAP_PASSWORD"] = os.environ.get("IMAP_PASSWORD")
     app.config["BRAVE_API_KEY"] = os.environ.get("BRAVE_API_KEY")
     app.config["OPENAI_API_KEY"] = os.environ.get("OPENAI_API_KEY")
+    app.config["OPENAI_MODEL"] = os.environ.get("OPENAI_MODEL", "gpt-4.1-mini")
     app.config["PUBLIC_BASE_URL"] = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
     app.config["LANDING_OPERATOR_NAME"] = os.environ.get("LANDING_OPERATOR_NAME")
     app.config["LANDING_OPERATOR_ADDRESS"] = os.environ.get(

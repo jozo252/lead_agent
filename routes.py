@@ -1182,15 +1182,20 @@ def check_reply(lead_id):
             received_at=received_at or datetime.utcnow(),
             imap_message_id=imap_message_id,
         )
+        db.session.add(email_reply)
 
         lead.status = "Odpovedal"
-        mark_campaign_recipient_replied(
+        lead.next_follow_up_at = None
+        suppression = mark_campaign_recipient_replied(
             email_reply.campaign_recipient,
             email_reply.received_at,
+            reply_body=email_reply.text_body,
+            sender_email=email_reply.from_email,
         )
 
         db.session.add(activity)
-        db.session.add(email_reply)
+        if suppression is not None:
+            db.session.add(suppression)
         db.session.commit()
 
         flash("Našiel som odpoveď a zapísal ju do histórie.", "success")
@@ -1455,10 +1460,15 @@ def sync_inbox():
             db.session.add(reply)
 
             lead.status = "Odpovedal"
-            mark_campaign_recipient_replied(
+            lead.next_follow_up_at = None
+            suppression = mark_campaign_recipient_replied(
                 reply.campaign_recipient,
                 reply.received_at,
+                reply_body=reply.text_body,
+                sender_email=reply.from_email,
             )
+            if suppression is not None:
+                db.session.add(suppression)
             db.session.add(
                 LeadActivity(
                     lead=lead,

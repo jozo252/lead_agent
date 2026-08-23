@@ -1,33 +1,39 @@
 from datetime import datetime, timezone
 
 from flask import Blueprint, flash, redirect, render_template, request, url_for
-from flask_mail import Message
 from sqlalchemy import func
 
-from extensions import db, mail
+from extensions import db
 from models import (
     Campaign,
     CampaignRecipient,
     Company,
     CompanyContact,
-    LeadActivity,
-    OutboundEmail,
     Suppression,
 )
+from services.campaign_ai import CampaignAIError, generate_campaign_plan
+from services.campaign_automation import (
+    prepare_automated_recipients,
+    run_campaign_automation,
+)
+from services.campaign_delivery import send_campaign_recipients, sent_today_count
 from services.campaigns import (
     best_email_contact,
+    clean_automated_outreach_body,
     ensure_opt_out_footer,
+    ensure_validation_disclosure,
     is_suppressed,
     normalize_email,
     normalize_suppression_value,
     render_campaign_template,
 )
+from services.contact_selection import verified_contact_matches
 from services.company_filtering import (
     company_filters_from_source,
     filtered_companies_query,
 )
-from services.crm import get_or_create_company_lead
 from services.postal_locations import LocationLookupError
+from services.landing_pages import ensure_landing_page_link
 
 
 campaign_bp = Blueprint("campaigns", __name__, url_prefix="/campaigns")
@@ -47,14 +53,14 @@ RECIPIENT_OUTCOMES = {
     "bounced": "Nedoručené",
     "opted_out": "Neželá si kontakt",
 }
+OFFER_STAGES = {
+    "ready": "Hotová ponuka",
+    "validation": "Validačný test / pripravovaný produkt",
+}
 
 
 def utcnow():
     return datetime.now(timezone.utc)
-
-
-def naive_utcnow():
-    return utcnow().replace(tzinfo=None)
 
 
 def parse_limited_integer(value, default, minimum, maximum):
@@ -92,6 +98,7 @@ def new_campaign():
         return render_template(
             "campaign_form.html",
             offer_types=OFFER_TYPES,
+            offer_stages=OFFER_STAGES,
         )
 
     name = request.form.get("name", "").strip()
@@ -99,24 +106,90 @@ def new_campaign():
     offer_description = request.form.get("offer_description", "").strip()
     subject_template = request.form.get("subject_template", "").strip()
     body_template = request.form.get("body_template", "").strip()
+    offer_stage = request.form.get("offer_stage", "ready").strip()
+    automation_enabled = request.form.get("automation_enabled") == "on"
+    target_hint = request.form.get("target_hint", "").strip()
     daily_limit = parse_limited_integer(
         request.form.get("daily_limit"),
-        default=20,
+        default=10,
         minimum=1,
         maximum=100,
     )
+    target_total = parse_limited_integer(
+        request.form.get("target_total"),
+        default=50,
+        minimum=1,
+        maximum=1000,
+    )
+    batch_size = parse_limited_integer(
+        request.form.get("batch_size"),
+        default=10,
+        minimum=1,
+        maximum=100,
+    )
+    contact_cooldown_days = parse_limited_integer(
+        request.form.get("contact_cooldown_days"),
+        default=90,
+        minimum=0,
+        maximum=3650,
+    )
+    follow_up_days = parse_limited_integer(
+        request.form.get("follow_up_days"),
+        default=7,
+        minimum=1,
+        maximum=90,
+    )
+    targeting_profile = None
 
     if not name or len(name) > 200:
         flash("Názov kampane je povinný a môže mať najviac 200 znakov.", "error")
     elif offer_type not in OFFER_TYPES:
         flash("Vyber platný typ ponuky.", "error")
+    elif offer_stage not in OFFER_STAGES:
+        flash("Vyber platné štádium ponuky.", "error")
     elif not offer_description:
         flash("Stručne opíš, čo ponúkaš alebo hľadáš.", "error")
-    elif not subject_template or len(subject_template) > 255:
+    elif not automation_enabled and (not subject_template or len(subject_template) > 255):
         flash("Predmet je povinný a môže mať najviac 255 znakov.", "error")
-    elif not body_template:
+    elif not automation_enabled and not body_template:
         flash("Text kampane nemôže byť prázdny.", "error")
     else:
+        if automation_enabled:
+            try:
+                plan = generate_campaign_plan(
+                    offer_description=offer_description,
+                    offer_type=offer_type,
+                    offer_stage=offer_stage,
+                    target_hint=target_hint,
+                    campaign_name=name,
+                )
+            except CampaignAIError as exc:
+                flash(str(exc), "error")
+                return render_template(
+                    "campaign_form.html",
+                    offer_types=OFFER_TYPES,
+                    offer_stages=OFFER_STAGES,
+                    form=request.form,
+                )
+            targeting_profile = plan["targeting_profile"]
+            subject_template = subject_template or plan["subject_template"]
+            body_template = body_template or plan["body_template"]
+            body_template = clean_automated_outreach_body(
+                body_template,
+                company_name="{company_name}",
+            )
+            if not subject_template or not body_template:
+                flash("AI nepripravila použiteľný predmet a text kampane.", "error")
+                return render_template(
+                    "campaign_form.html",
+                    offer_types=OFFER_TYPES,
+                    offer_stages=OFFER_STAGES,
+                    form=request.form,
+                )
+
+        if offer_stage == "validation":
+            body_template = ensure_validation_disclosure(body_template)
+
         campaign = Campaign(
             name=name,
             offer_type=offer_type,
@@ -124,15 +197,29 @@ def new_campaign():
             subject_template=subject_template,
             body_template=body_template,
             daily_limit=daily_limit,
+            automation_enabled=automation_enabled,
+            offer_stage=offer_stage,
+            targeting_profile=targeting_profile,
+            target_total=target_total,
+            batch_size=min(batch_size, daily_limit),
+            follow_up_days=follow_up_days,
+            contact_cooldown_days=contact_cooldown_days,
         )
         db.session.add(campaign)
         db.session.commit()
-        flash("Kampaň bola vytvorená. Teraz do nej pridaj vyfiltrované firmy.", "success")
+        flash(
+            "Kampaň bola vytvorená. Skontroluj AI zacielenie a text; aktivácia "
+            "automatickej kampane schváli budúce denné dávky na odoslanie."
+            if automation_enabled
+            else "Kampaň bola vytvorená. Teraz do nej pridaj vyfiltrované firmy.",
+            "success",
+        )
         return redirect(url_for("campaigns.campaign_detail", campaign_id=campaign.id))
 
     return render_template(
         "campaign_form.html",
         offer_types=OFFER_TYPES,
+        offer_stages=OFFER_STAGES,
         form=request.form,
     )
 
@@ -147,11 +234,7 @@ def campaign_detail(campaign_id):
             func.count(CampaignRecipient.id),
         ).filter_by(campaign_id=campaign.id).group_by(CampaignRecipient.status)
     }
-    today_start = utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-    sent_today = CampaignRecipient.query.filter(
-        CampaignRecipient.campaign_id == campaign.id,
-        CampaignRecipient.sent_at >= today_start,
-    ).count()
+    sent_today = sent_today_count(campaign)
     target_filters = dict(campaign.target_filters or {})
     if not target_filters:
         target_filters = {"email": "any", "contacted": "no"}
@@ -162,6 +245,7 @@ def campaign_detail(campaign_id):
         recipient_counts=recipient_counts,
         sent_today=sent_today,
         offer_types=OFFER_TYPES,
+        offer_stages=OFFER_STAGES,
         recipient_outcomes=RECIPIENT_OUTCOMES,
         target_companies_url=url_for("main.companies", **target_filters),
     )
@@ -173,10 +257,244 @@ def update_campaign_status(campaign_id):
     status = request.form.get("status", "")
     if status not in {"draft", "active", "paused", "completed"}:
         flash("Neplatný stav kampane.", "error")
+    elif status == "active" and campaign.automation_enabled and not campaign.targeting_profile:
+        flash("Automatickej kampani chýba AI profil zacielenia.", "error")
     else:
+        approved_automatic_drafts = 0
+        if status == "active" and campaign.automation_enabled:
+            automatic_drafts = CampaignRecipient.query.filter_by(
+                campaign_id=campaign.id,
+                selection_source="automation",
+                status="draft",
+            ).all()
+            for recipient in automatic_drafts:
+                if verified_contact_matches(
+                    recipient.contact,
+                    recipient.recipient_email,
+                ):
+                    recipient.status = "approved"
+                    recipient.approved_at = utcnow()
+                    recipient.last_error = None
+                    approved_automatic_drafts += 1
+                else:
+                    recipient.last_error = (
+                        "Automatická aktivácia vyžaduje overený e-mail. "
+                        "Kontakt skontroluj a schváľ ručne."
+                    )
         campaign.status = status
+        if status == "active" and campaign.activated_at is None:
+            campaign.activated_at = utcnow()
+        if status == "completed":
+            campaign.completed_at = utcnow()
         db.session.commit()
-        flash("Stav kampane bol uložený.", "success")
+        flash(
+            (
+                "Kampaň je aktívna. Budúce automatické dávky sú schválené na "
+                f"odoslanie; schválené vybrané firmy: {approved_automatic_drafts}."
+            )
+            if status == "active" and campaign.automation_enabled
+            else "Stav kampane bol uložený.",
+            "success",
+        )
+    return redirect(url_for("campaigns.campaign_detail", campaign_id=campaign.id))
+
+
+@campaign_bp.route("/<int:campaign_id>/select-companies", methods=["POST"])
+def select_automatic_companies(campaign_id):
+    campaign = Campaign.query.get_or_404(campaign_id)
+    if not campaign.automation_enabled:
+        flash("Automatický výber je dostupný iba pre AI kampaň.", "error")
+        return redirect(url_for("campaigns.campaign_detail", campaign_id=campaign.id))
+    if campaign.status not in {"draft", "paused"}:
+        flash("Firmy vyberaj iba v koncepte alebo počas pozastavenia kampane.", "error")
+        return redirect(url_for("campaigns.campaign_detail", campaign_id=campaign.id))
+    if not campaign.targeting_profile:
+        flash("Kampani chýba AI profil so SK NACE a kľúčovými slovami.", "error")
+        return redirect(url_for("campaigns.campaign_detail", campaign_id=campaign.id))
+
+    requested = parse_limited_integer(
+        request.form.get("selection_count"),
+        default=campaign.batch_size,
+        minimum=1,
+        maximum=100,
+    )
+    reserved_count = CampaignRecipient.query.filter(
+        CampaignRecipient.campaign_id == campaign.id,
+        CampaignRecipient.status.notin_({"failed", "suppressed"}),
+    ).count()
+    remaining = max(0, campaign.target_total - reserved_count)
+    requested = min(requested, remaining)
+    if requested == 0:
+        flash("Celkový cieľ kampane je už vybranými firmami naplnený.", "warning")
+        return redirect(url_for("campaigns.campaign_detail", campaign_id=campaign.id))
+
+    try:
+        result = prepare_automated_recipients(
+            campaign,
+            requested,
+            recipient_status="draft",
+        )
+    except Exception as exc:
+        db.session.rollback()
+        flash(f"Automatický výber firiem zlyhal: {str(exc)[:300]}", "error")
+        return redirect(url_for("campaigns.campaign_detail", campaign_id=campaign.id))
+
+    if result["prepared"]:
+        message = (
+            f"Vybrané firmy: {result['prepared']}; bez e-mailu: "
+            f"{result['without_email']}; potlačené: {result['suppressed']}. "
+            "Firmy sú zatiaľ koncepty a odošlú sa až po aktivácii kampane."
+        )
+        category = "success"
+    elif result["considered"] == 0:
+        message = (
+            "Podľa uloženého SK NACE, kľúčových slov a lokality sa nenašli "
+            "žiadne firmy. "
+            "Skontroluj AI zacielenie kampane."
+        )
+        category = "warning"
+    elif result["qualified"] == 0:
+        message = (
+            f"Databáza našla {result['considered']} kandidátov, ale AI nedala "
+            f"žiadnemu minimálnu zhodu {result['minimum_score']}/100. "
+            "SK NACE je pravdepodobne príliš široké alebo nezodpovedá segmentu."
+        )
+        category = "warning"
+    else:
+        message = (
+            f"AI kvalifikovala {result['qualified']} firiem, ale nepodarilo sa "
+            f"získať použiteľný e-mail. Bez e-mailu: {result['without_email']}; "
+            f"potlačené: {result['suppressed']}."
+        )
+        category = "warning"
+    flash(message, category)
+    return redirect(url_for("campaigns.campaign_detail", campaign_id=campaign.id))
+
+
+@campaign_bp.route("/<int:campaign_id>/regenerate-targeting", methods=["POST"])
+def regenerate_automatic_targeting(campaign_id):
+    campaign = Campaign.query.get_or_404(campaign_id)
+    if not campaign.automation_enabled:
+        flash("AI zacielenie možno regenerovať iba pri automatickej kampani.", "error")
+        return redirect(url_for("campaigns.campaign_detail", campaign_id=campaign.id))
+    if campaign.status == "active":
+        flash("Pred regenerovaním zacielenia kampaň pozastav.", "error")
+        return redirect(url_for("campaigns.campaign_detail", campaign_id=campaign.id))
+    if campaign.recipients:
+        flash(
+            "Zacielenie nemožno regenerovať po výbere firiem. Najprv uprav "
+            "SK NACE ručne alebo vytvor novú kampaň.",
+            "error",
+        )
+        return redirect(url_for("campaigns.campaign_detail", campaign_id=campaign.id))
+
+    profile = campaign.targeting_profile or {}
+    target_hint = str(profile.get("target_hint") or campaign.name).strip()
+    try:
+        plan = generate_campaign_plan(
+            offer_description=campaign.offer_description,
+            offer_type=campaign.offer_type,
+            offer_stage=campaign.offer_stage,
+            target_hint=target_hint,
+            campaign_name=campaign.name,
+        )
+    except CampaignAIError as exc:
+        flash(f"Regenerovanie zacielenia zlyhalo: {exc}", "error")
+        return redirect(url_for("campaigns.campaign_detail", campaign_id=campaign.id))
+
+    campaign.targeting_profile = plan["targeting_profile"]
+    campaign.last_automation_error = None
+    db.session.commit()
+    flash(
+        "AI zacielenie bolo regenerované aj z názvu kampane. Skontroluj nové "
+        "SK NACE pred výberom firiem.",
+        "success",
+    )
+    return redirect(url_for("campaigns.campaign_detail", campaign_id=campaign.id))
+
+
+@campaign_bp.route("/<int:campaign_id>/automation-settings", methods=["POST"])
+def update_automation_settings(campaign_id):
+    campaign = Campaign.query.get_or_404(campaign_id)
+    if not campaign.automation_enabled:
+        flash("Táto kampaň nemá zapnutú automatizáciu.", "error")
+        return redirect(url_for("campaigns.campaign_detail", campaign_id=campaign.id))
+    if campaign.status == "active":
+        flash("Pred úpravou automatickú kampaň pozastav.", "error")
+        return redirect(url_for("campaigns.campaign_detail", campaign_id=campaign.id))
+
+    subject_template = request.form.get("subject_template", "").strip()
+    body_template = request.form.get("body_template", "").strip()
+    if not subject_template or len(subject_template) > 255 or not body_template:
+        flash("Predmet a text sú povinné; predmet môže mať najviac 255 znakov.", "error")
+        return redirect(url_for("campaigns.campaign_detail", campaign_id=campaign.id))
+
+    def comma_values(name, maximum):
+        return [
+            value.strip()[:120]
+            for value in request.form.get(name, "").split(",")
+            if value.strip()
+        ][:maximum]
+
+    profile = dict(campaign.targeting_profile or {})
+    profile["ideal_customer_profile"] = request.form.get(
+        "ideal_customer_profile", ""
+    ).strip()[:1000]
+    profile["nace_keywords"] = comma_values("nace_keywords", 8)
+    profile["company_keywords"] = comma_values("company_keywords", 10)
+    profile["location_keywords"] = comma_values("location_keywords", 8)
+    profile["minimum_fit_score"] = parse_limited_integer(
+        request.form.get("minimum_fit_score"),
+        default=60,
+        minimum=0,
+        maximum=100,
+    )
+    if not profile["nace_keywords"] and not profile["company_keywords"]:
+        flash("Zadaj aspoň jedno SK NACE alebo firemné kľúčové slovo.", "error")
+        return redirect(url_for("campaigns.campaign_detail", campaign_id=campaign.id))
+
+    campaign.subject_template = subject_template
+    campaign.body_template = (
+        ensure_validation_disclosure(body_template)
+        if campaign.offer_stage == "validation"
+        else body_template
+    )
+    campaign.targeting_profile = profile
+    campaign.target_total = parse_limited_integer(
+        request.form.get("target_total"),
+        default=campaign.target_total,
+        minimum=1,
+        maximum=1000,
+    )
+    campaign.daily_limit = parse_limited_integer(
+        request.form.get("daily_limit"),
+        default=campaign.daily_limit,
+        minimum=1,
+        maximum=100,
+    )
+    campaign.batch_size = min(
+        parse_limited_integer(
+            request.form.get("batch_size"),
+            default=campaign.batch_size,
+            minimum=1,
+            maximum=100,
+        ),
+        campaign.daily_limit,
+    )
+    campaign.contact_cooldown_days = parse_limited_integer(
+        request.form.get("contact_cooldown_days"),
+        default=campaign.contact_cooldown_days,
+        minimum=0,
+        maximum=3650,
+    )
+    campaign.follow_up_days = parse_limited_integer(
+        request.form.get("follow_up_days"),
+        default=campaign.follow_up_days,
+        minimum=1,
+        maximum=90,
+    )
+    db.session.commit()
+    flash("Nastavenie automatickej kampane bolo uložené.", "success")
     return redirect(url_for("campaigns.campaign_detail", campaign_id=campaign.id))
 
 
@@ -242,7 +560,10 @@ def add_filtered_recipients(campaign_id):
                 recipient_email=email,
                 subject=render_campaign_template(campaign.subject_template, company),
                 body=ensure_opt_out_footer(
-                    render_campaign_template(campaign.body_template, company)
+                    ensure_landing_page_link(
+                        render_campaign_template(campaign.body_template, company),
+                        campaign,
+                    )
                 ),
             )
         )
@@ -296,9 +617,28 @@ def update_recipient(campaign_id, recipient_id):
         return redirect(url_for("campaigns.campaign_detail", campaign_id=campaign_id))
 
     recipient.subject = subject
-    recipient.body = ensure_opt_out_footer(body)
+    if recipient.campaign.offer_stage == "validation":
+        body = ensure_validation_disclosure(body)
+    recipient.body = ensure_opt_out_footer(
+        ensure_landing_page_link(body, recipient.campaign)
+    )
     recipient.last_error = None
     if action == "approve":
+        if recipient.campaign.automation_enabled and not verified_contact_matches(
+            recipient.contact,
+            recipient.recipient_email,
+        ):
+            recipient.status = "draft"
+            recipient.approved_at = None
+            recipient.last_error = (
+                "Automatické odoslanie vyžaduje platný a overený e-mailový "
+                "kontakt zhodný s adresou príjemcu."
+            )
+            db.session.commit()
+            flash(recipient.last_error, "error")
+            return redirect(
+                url_for("campaigns.campaign_detail", campaign_id=campaign_id)
+            )
         suppression = is_suppressed(recipient.company, recipient.recipient_email)
         if suppression:
             recipient.status = "suppressed"
@@ -320,107 +660,40 @@ def update_recipient(campaign_id, recipient_id):
 @campaign_bp.route("/<int:campaign_id>/send", methods=["POST"])
 def send_approved_recipients(campaign_id):
     campaign = Campaign.query.get_or_404(campaign_id)
-    if campaign.status in {"paused", *CAMPAIGN_TERMINAL_STATUSES}:
-        flash("Kampaň je pozastavená alebo ukončená.", "error")
-        return redirect(url_for("campaigns.campaign_detail", campaign_id=campaign.id))
-
     requested = parse_limited_integer(
         request.form.get("batch_size"),
         default=10,
         minimum=1,
         maximum=100,
     )
-    today_start = utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-    sent_today = CampaignRecipient.query.filter(
-        CampaignRecipient.campaign_id == campaign.id,
-        CampaignRecipient.sent_at >= today_start,
-    ).count()
-    remaining = max(0, campaign.daily_limit - sent_today)
-    send_count = min(requested, remaining)
-    if send_count == 0:
-        flash("Denný limit kampane je už vyčerpaný.", "warning")
-        return redirect(url_for("campaigns.campaign_detail", campaign_id=campaign.id))
+    result = send_campaign_recipients(campaign, requested)
+    flash(
+        result["message"]
+        or (
+            f"Odoslané: {result['sent']}, chyby alebo kontrola: "
+            f"{result['failed']}, potlačené: {result['suppressed']}, "
+            f"neoverené: {result['unverified']}."
+        ),
+        "success" if result["sent"] else "warning",
+    )
+    return redirect(url_for("campaigns.campaign_detail", campaign_id=campaign.id))
 
-    recipients = CampaignRecipient.query.filter_by(
-        campaign_id=campaign.id,
-        status="approved",
-    ).order_by(CampaignRecipient.approved_at, CampaignRecipient.id).limit(send_count).all()
-    sent = 0
-    failed = 0
-    suppressed = 0
 
-    for recipient in recipients:
-        if is_suppressed(recipient.company, recipient.recipient_email):
-            recipient.status = "suppressed"
-            recipient.last_error = "Kontakt bol pred odoslaním nájdený na suppression zozname."
-            db.session.commit()
-            suppressed += 1
-            continue
-
-        recipient.status = "sending"
-        recipient.last_error = None
-        db.session.commit()
-        sent_externally = False
-
-        try:
-            message = Message(
-                subject=recipient.subject,
-                recipients=[recipient.recipient_email],
-                body=recipient.body,
-            )
-            mail.send(message)
-            sent_externally = True
-
-            lead = get_or_create_company_lead(
-                recipient.company,
-                recipient.recipient_email,
-                campaign.offer_type,
-            )
-            lead.reason_to_contact = campaign.offer_description
-            lead.suggested_message = recipient.body
-            lead.status = "Oslovený"
-            lead.last_contacted_at = naive_utcnow()
-            db.session.add(
-                LeadActivity(
-                    lead=lead,
-                    activity_type="Email odoslaný",
-                    note=f"Kampaň: {campaign.name}\nPredmet: {recipient.subject}\n\n{recipient.body}",
-                )
-            )
-            db.session.add(
-                OutboundEmail(
-                    lead=lead,
-                    campaign_recipient=recipient,
-                    message_id=message.msgId,
-                    recipient=recipient.recipient_email,
-                    subject=recipient.subject,
-                    body=recipient.body,
-                    sent_at=naive_utcnow(),
-                )
-            )
-            recipient.status = "sent"
-            recipient.sent_at = utcnow()
-            campaign.status = "active"
-            db.session.commit()
-            sent += 1
-        except Exception as exc:
-            db.session.rollback()
-            recipient = db.session.get(CampaignRecipient, recipient.id)
-            recipient.status = "sending" if sent_externally else "failed"
-            recipient.last_error = (
-                "E-mail mohol byť odoslaný, ale zápis do databázy zlyhal; pred opakovaním ho skontroluj."
-                if sent_externally
-                else str(exc)[:1000]
-            )
-            db.session.commit()
-            failed += 1
-
-    if not recipients:
-        flash("Kampaň nemá schválených príjemcov.", "warning")
+@campaign_bp.route("/<int:campaign_id>/run-automation", methods=["POST"])
+def run_automation_now(campaign_id):
+    campaign = Campaign.query.get_or_404(campaign_id)
+    result = run_campaign_automation(campaign)
+    if result.get("error"):
+        flash(f"Automatická dávka zlyhala: {result['error']}", "error")
+    elif result.get("skipped"):
+        flash(result["skipped"], "warning")
     else:
+        delivery = result["delivery"]
         flash(
-            f"Odoslané: {sent}, chyby alebo kontrola: {failed}, potlačené: {suppressed}.",
-            "success" if sent else "warning",
+            f"Dávka dokončená: pripravené {result['prepared']['prepared']}, "
+            f"odoslané {delivery['sent']}, celkovo {result['total_sent']} z "
+            f"{result['target_total']}.",
+            "success" if delivery["sent"] else "warning",
         )
     return redirect(url_for("campaigns.campaign_detail", campaign_id=campaign.id))
 

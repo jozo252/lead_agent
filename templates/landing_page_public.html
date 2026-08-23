@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="sk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="referrer" content="no-referrer">
+    <title>{{ content.get('headline', campaign.name) }} · {{ content.get('brand_name', 'Gallax') }}</title>
+    <meta name="description" content="{{ content.get('meta_description', '') }}">
+    {% if is_preview %}<meta name="robots" content="noindex,nofollow">{% endif %}
+    <meta property="og:type" content="website">
+    <meta property="og:title" content="{{ content.get('headline', campaign.name) }}">
+    <meta property="og:description" content="{{ content.get('meta_description', '') }}">
+    {% if landing_page.hero_image_url and landing_page.hero_image_url.startswith('https://') %}<meta property="og:image" content="{{ landing_page.hero_image_url }}">{% endif %}
+    <style>
+        :root {
+            --ink: #10231f;
+            --muted: #5d6e69;
+            --paper: #f6f7f2;
+            --panel: #ffffff;
+            --line: #dfe5df;
+            --accent: #167d68;
+            --accent-dark: #0e5e4d;
+            --accent-soft: #e3f3ee;
+            --warm: #eab464;
+            --radius: 24px;
+            --shadow: 0 24px 70px rgba(20, 48, 41, .10);
+        }
+        * { box-sizing: border-box; }
+        html { scroll-behavior: smooth; }
+        body {
+            margin: 0;
+            color: var(--ink);
+            background: var(--paper);
+            font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            line-height: 1.6;
+        }
+        a { color: inherit; }
+        .preview-banner { padding: 9px 18px; color: #fff; background: #9a5b08; text-align: center; font-size: 13px; font-weight: 750; }
+        .shell { width: min(1160px, calc(100% - 40px)); margin: 0 auto; }
+        .site-header { padding: 22px 0; }
+        .nav { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+        .brand { font-size: 20px; font-weight: 850; letter-spacing: -.04em; }
+        .nav-link { color: var(--muted); font-size: 14px; font-weight: 700; text-decoration: none; }
+        .hero { padding: 62px 0 92px; overflow: hidden; }
+        .hero-grid { display: grid; grid-template-columns: minmax(0, 1.08fr) minmax(360px, .92fr); gap: 70px; align-items: center; }
+        .eyebrow { margin: 0 0 16px; color: var(--accent-dark); font-size: 13px; font-weight: 850; letter-spacing: .12em; text-transform: uppercase; }
+        .stage { display: inline-flex; margin: 0 0 18px; padding: 7px 11px; border: 1px solid #efc986; border-radius: 999px; background: #fff7e8; color: #87520a; font-size: 12px; font-weight: 800; }
+        h1 { margin: 0; max-width: 760px; font-size: clamp(42px, 6vw, 74px); line-height: 1.02; letter-spacing: -.065em; }
+        .lead { max-width: 680px; margin: 24px 0 30px; color: var(--muted); font-size: clamp(18px, 2vw, 22px); }
+        .button { display: inline-flex; align-items: center; justify-content: center; min-height: 50px; padding: 13px 20px; border-radius: 12px; background: var(--accent); color: #fff; font-size: 15px; font-weight: 800; text-decoration: none; box-shadow: 0 12px 28px rgba(22, 125, 104, .2); }
+        .button:hover { background: var(--accent-dark); }
+        .contact-note { margin: 12px 0 0; color: var(--muted); font-size: 13px; }
+        .visual { position: relative; }
+        .visual::before { content: ""; position: absolute; inset: -35px -28px auto auto; width: 170px; height: 170px; border-radius: 50%; background: var(--warm); opacity: .35; filter: blur(2px); }
+        .visual-card { position: relative; overflow: hidden; min-height: 430px; padding: 34px; border: 1px solid rgba(16, 35, 31, .08); border-radius: 30px; background: var(--panel); box-shadow: var(--shadow); }
+        .visual-card img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+        .visual-label { color: var(--accent-dark); font-size: 12px; font-weight: 850; letter-spacing: .1em; text-transform: uppercase; }
+        .visual-card h2 { margin: 14px 0 26px; font-size: 31px; line-height: 1.15; letter-spacing: -.045em; }
+        .visual-list { display: grid; gap: 14px; }
+        .visual-item { display: grid; grid-template-columns: 30px 1fr; gap: 12px; align-items: center; padding: 14px; border: 1px solid var(--line); border-radius: 14px; background: #fbfcf9; font-weight: 720; }
+        .check { display: grid; width: 30px; height: 30px; place-items: center; border-radius: 50%; background: var(--accent-soft); color: var(--accent-dark); }
+        section { padding: 88px 0; }
+        .section-kicker { margin: 0 0 12px; color: var(--accent-dark); font-size: 13px; font-weight: 850; letter-spacing: .12em; text-transform: uppercase; }
+        .section-title { margin: 0; max-width: 760px; font-size: clamp(34px, 4.5vw, 54px); line-height: 1.08; letter-spacing: -.055em; }
+        .section-copy { max-width: 760px; margin: 22px 0 0; color: var(--muted); font-size: 18px; }
+        .problem { color: #f4faf7; background: var(--ink); }
+        .problem .section-kicker { color: #7dd6c1; }
+        .problem .section-copy { color: #bdcbc6; }
+        .cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; margin-top: 42px; }
+        .card { padding: 28px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); box-shadow: 0 12px 34px rgba(20, 48, 41, .06); }
+        .card-number { display: grid; width: 38px; height: 38px; place-items: center; margin-bottom: 24px; border-radius: 11px; background: var(--accent-soft); color: var(--accent-dark); font-size: 13px; font-weight: 900; }
+        .card h3 { margin: 0 0 10px; font-size: 21px; letter-spacing: -.035em; }
+        .card p { margin: 0; color: var(--muted); }
+        .audience-box { display: grid; grid-template-columns: .8fr 1.2fr; gap: 50px; align-items: center; padding: 48px; border: 1px solid #cfe5dc; border-radius: 30px; background: var(--accent-soft); }
+        .audience-box p { margin: 0; color: #345e54; font-size: 18px; }
+        .validation-note { margin-top: 34px; padding: 18px 20px; border: 1px solid #efc986; border-radius: 14px; background: #fff8e9; color: #744908; font-size: 14px; font-weight: 680; }
+        .cta { padding-top: 20px; }
+        .cta-box { padding: 64px; border-radius: 34px; color: #fff; background: var(--accent-dark); text-align: center; box-shadow: var(--shadow); }
+        .cta-box h2 { margin: 0 auto; max-width: 760px; font-size: clamp(34px, 5vw, 56px); line-height: 1.08; letter-spacing: -.055em; }
+        .cta-box p { max-width: 650px; margin: 18px auto 28px; color: #c9e7df; font-size: 18px; }
+        .cta-box .button { color: var(--accent-dark); background: #fff; box-shadow: none; }
+        footer { padding: 48px 0 56px; color: var(--muted); font-size: 13px; }
+        .footer-row { display: flex; justify-content: space-between; gap: 24px; border-top: 1px solid var(--line); padding-top: 26px; }
+        :focus-visible { outline: 3px solid var(--warm); outline-offset: 3px; }
+        @media (max-width: 850px) {
+            .hero { padding: 40px 0 70px; }
+            .hero-grid, .audience-box { grid-template-columns: 1fr; }
+            .hero-grid { gap: 42px; }
+            .cards { grid-template-columns: 1fr; }
+            .visual-card { min-height: 360px; }
+            .audience-box, .cta-box { padding: 34px 24px; }
+        }
+        @media (max-width: 560px) {
+            .shell { width: min(100% - 26px, 1160px); }
+            .site-header { padding: 17px 0; }
+            .nav-link { display: none; }
+            h1 { font-size: 42px; }
+            section { padding: 64px 0; }
+            .visual-card { min-height: 330px; padding: 24px; }
+            .footer-row { flex-direction: column; }
+        }
+    </style>
+</head>
+<body>
+    {% if is_preview %}<div class="preview-banner">Náhľad konceptu · táto verzia ešte nie je verejne publikovaná</div>{% endif %}
+    <header class="site-header">
+        <div class="shell nav">
+            <div class="brand">{{ content.get('brand_name', 'Gallax') }}</div>
+            {% if landing_page.contact_email %}<a class="nav-link" href="mailto:{{ landing_page.contact_email }}">{{ landing_page.contact_email }}</a>{% endif %}
+        </div>
+    </header>
+
+    <main>
+        <section class="hero">
+            <div class="shell hero-grid">
+                <div>
+                    {% if campaign.offer_stage == 'validation' %}<div class="stage">Pripravované riešenie · pilot</div>{% endif %}
+                    <p class="eyebrow">{{ content.get('eyebrow', '') }}</p>
+                    <h1>{{ content.get('headline', campaign.name) }}</h1>
+                    <p class="lead">{{ content.get('subheadline', '') }}</p>
+                    {% if landing_page.contact_email %}
+                        <a class="button" href="mailto:{{ landing_page.contact_email }}?subject={{ campaign.name|urlencode }}">{{ content.get('cta_label', 'Kontaktovať') }}</a>
+                        <p class="contact-note">Bez záväzku. Najprv si potvrdíme, či riešenie dáva zmysel.</p>
+                    {% endif %}
+                </div>
+                <div class="visual" aria-label="Prehľad ponuky">
+                    <div class="visual-card">
+                        {% if landing_page.hero_image_url %}
+                            <img src="{{ landing_page.hero_image_url }}" alt="{{ landing_page.hero_image_alt or '' }}" referrerpolicy="no-referrer">
+                        {% else %}
+                            <span class="visual-label">Čo získate</span>
+                            <h2>{{ content.get('solution_title', 'Praktické riešenie') }}</h2>
+                            <div class="visual-list">
+                                {% for benefit in content.get('benefits', []) %}
+                                    <div class="visual-item"><span class="check">✓</span><span>{{ benefit.get('title', '') }}</span></div>
+                                {% endfor %}
+                            </div>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="problem">
+            <div class="shell">
+                <p class="section-kicker">Problém</p>
+                <h2 class="section-title">{{ content.get('problem_title', '') }}</h2>
+                <p class="section-copy">{{ content.get('problem_text', '') }}</p>
+            </div>
+        </section>
+
+        <section>
+            <div class="shell">
+                <p class="section-kicker">Riešenie</p>
+                <h2 class="section-title">{{ content.get('solution_title', '') }}</h2>
+                <p class="section-copy">{{ content.get('solution_text', '') }}</p>
+                <div class="cards">
+                    {% for benefit in content.get('benefits', []) %}
+                        <article class="card">
+                            <div class="card-number">0{{ loop.index }}</div>
+                            <h3>{{ benefit.get('title', '') }}</h3>
+                            <p>{{ benefit.get('text', '') }}</p>
+                        </article>
+                    {% endfor %}
+                </div>
+            </div>
+        </section>
+
+        <section>
+            <div class="shell">
+                <p class="section-kicker">Postup</p>
+                <h2 class="section-title">{{ content.get('process_title', '') }}</h2>
+                <div class="cards">
+                    {% for step in content.get('steps', []) %}
+                        <article class="card">
+                            <div class="card-number">{{ loop.index }}</div>
+                            <h3>{{ step.get('title', '') }}</h3>
+                            <p>{{ step.get('text', '') }}</p>
+                        </article>
+                    {% endfor %}
+                </div>
+            </div>
+        </section>
+
+        <section>
+            <div class="shell">
+                <div class="audience-box">
+                    <div>
+                        <p class="section-kicker">Vhodnosť</p>
+                        <h2 class="section-title">{{ content.get('audience_title', '') }}</h2>
+                    </div>
+                    <p>{{ content.get('audience_text', '') }}</p>
+                </div>
+                {% if validation_notice %}<div class="validation-note">{{ validation_notice }}</div>{% endif %}
+            </div>
+        </section>
+
+        <section class="cta">
+            <div class="shell">
+                <div class="cta-box">
+                    <h2>{{ content.get('cta_title', '') }}</h2>
+                    <p>{{ content.get('cta_text', '') }}</p>
+                    {% if landing_page.contact_email %}<a class="button" href="mailto:{{ landing_page.contact_email }}?subject={{ campaign.name|urlencode }}">{{ content.get('cta_label', 'Kontaktovať') }}</a>{% endif %}
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        <div class="shell footer-row">
+            <span>
+                © {{ content.get('brand_name', 'Gallax') }} · {{ operator_identity.name }} ·
+                {{ operator_identity.address }} · IČO {{ operator_identity.ico }} ·
+                {{ operator_identity.register }}
+            </span>
+            <span>
+                <a href="tel:{{ operator_identity.phone|replace(' ', '') }}">{{ operator_identity.phone }}</a>
+                {% if landing_page.contact_email %} · <a href="mailto:{{ landing_page.contact_email }}">{{ landing_page.contact_email }}</a>{% endif %}
+            </span>
+        </div>
+    </footer>
+</body>
+</html>

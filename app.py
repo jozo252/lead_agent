@@ -12,6 +12,33 @@ from commands.rpo import (
 )
 from commands.email import test_imap_command, test_smtp_command
 from commands.locations import import_postal_locations_command
+from commands.campaigns import run_campaigns_command
+
+
+DEFAULT_DEVELOPMENT_SECRET_KEY = "dev-secret-key-change-this"
+PRODUCTION_ENVIRONMENTS = {"prod", "production"}
+
+
+def _validate_secret_key_config(app):
+    """Reject a missing or well-known development secret in production."""
+    environment = str(app.config.get("APP_ENV") or "").strip().casefold()
+    secret_key = app.config.get("SECRET_KEY")
+
+    if environment in PRODUCTION_ENVIRONMENTS:
+        if not secret_key or secret_key == DEFAULT_DEVELOPMENT_SECRET_KEY:
+            raise RuntimeError(
+                "Production requires a non-default SECRET_KEY. "
+                "Set a strong, unique SECRET_KEY environment variable."
+            )
+    elif not secret_key:
+        app.config["SECRET_KEY"] = DEFAULT_DEVELOPMENT_SECRET_KEY
+
+    app.config["SESSION_COOKIE_HTTPONLY"] = True
+    app.config["SESSION_COOKIE_SAMESITE"] = (
+        app.config.get("SESSION_COOKIE_SAMESITE") or "Lax"
+    )
+    if environment in PRODUCTION_ENVIRONMENTS:
+        app.config["SESSION_COOKIE_SECURE"] = True
 
 
 def create_app(config=None):
@@ -19,7 +46,13 @@ def create_app(config=None):
 
     app = Flask(__name__)
 
-    app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "dev-secret-key-change-this")
+    app.config["APP_ENV"] = os.environ.get(
+        "APP_ENV",
+        os.environ.get("FLASK_ENV", "development"),
+    )
+    app.config["SECRET_KEY"] = (
+        os.environ.get("SECRET_KEY") or DEFAULT_DEVELOPMENT_SECRET_KEY
+    )
     app.config["SQLALCHEMY_DATABASE_URI"] = os.environ.get(
         "DATABASE_URL",
         "sqlite:///leads.db",
@@ -37,8 +70,19 @@ def create_app(config=None):
     app.config["IMAP_PASSWORD"] = os.environ.get("IMAP_PASSWORD")
     app.config["BRAVE_API_KEY"] = os.environ.get("BRAVE_API_KEY")
     app.config["OPENAI_API_KEY"] = os.environ.get("OPENAI_API_KEY")
+    app.config["PUBLIC_BASE_URL"] = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
+    app.config["LANDING_OPERATOR_NAME"] = os.environ.get("LANDING_OPERATOR_NAME")
+    app.config["LANDING_OPERATOR_ADDRESS"] = os.environ.get(
+        "LANDING_OPERATOR_ADDRESS"
+    )
+    app.config["LANDING_OPERATOR_ICO"] = os.environ.get("LANDING_OPERATOR_ICO")
+    app.config["LANDING_OPERATOR_PHONE"] = os.environ.get("LANDING_OPERATOR_PHONE")
+    app.config["LANDING_OPERATOR_REGISTER"] = os.environ.get(
+        "LANDING_OPERATOR_REGISTER"
+    )
     if config:
         app.config.update(config)
+    _validate_secret_key_config(app)
 
     db.init_app(app)
     migrate.init_app(app, db, compare_type=True, render_as_batch=True)
@@ -52,10 +96,13 @@ def create_app(config=None):
     app.cli.add_command(test_smtp_command)
     app.cli.add_command(test_imap_command)
     app.cli.add_command(import_postal_locations_command)
+    app.cli.add_command(run_campaigns_command)
     from routes import main_bp
     app.register_blueprint(main_bp)
     from campaign_routes import campaign_bp
     app.register_blueprint(campaign_bp)
+    from landing_page_routes import landing_page_bp
+    app.register_blueprint(landing_page_bp)
 
     import models  # noqa: F401
 

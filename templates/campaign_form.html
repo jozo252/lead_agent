@@ -6,7 +6,7 @@
 <div class="page-header">
     <div>
         <h2 class="page-title">Nová kampaň</h2>
-        <p class="page-subtitle">Definuj jednu konkrétnu ponuku. Firmy pridáš až po vytvorení kampane.</p>
+        <p class="page-subtitle">Definuj ponuku. Automatická kampaň pripraví úzky AI profil a bude spracúvať jednu limitovanú dávku denne.</p>
     </div>
     <a class="btn btn-secondary" href="{{ url_for('campaigns.list_campaigns') }}">Späť</a>
 </div>
@@ -32,19 +32,56 @@
             Čo ponúkaš alebo hľadáš
             <textarea name="offer_description" required placeholder="Konkrétny výsledok pre firmu, nie všeobecný zoznam schopností.">{{ form.get('offer_description', '') if form else '' }}</textarea>
         </label>
+        <div class="grid grid-2 equal-grid">
+            <label>
+                Štádium ponuky
+                <select name="offer_stage" required>
+                    {% for value, label in offer_stages.items() %}
+                        <option value="{{ value }}" {% if form and form.get('offer_stage', 'ready') == value %}selected{% endif %}>{{ label }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label class="checkbox-field">
+                <input type="checkbox" name="automation_enabled" {% if form and form.get('automation_enabled') %}checked{% endif %}>
+                AI automaticky vyberá a pripravuje denné dávky
+            </label>
+        </div>
         <label>
-            Predmet e-mailu
-            <input name="subject_template" maxlength="255" required value="{{ form.get('subject_template', '') if form else '' }}" placeholder="Krátka otázka k spolupráci">
+            Cieľový segment a lokalita
+            <textarea name="target_hint" rows="3" placeholder="Napr. stolári v Bratislavskom kraji alebo autoservisy s viacerými mechanikmi.">{{ form.get('target_hint', '') if form else '' }}</textarea>
         </label>
         <label>
-            Základný text
-            <textarea name="body_template" rows="10" required placeholder="Dobrý deň, {company_name}, ...">{{ form.get('body_template', '') if form else '' }}</textarea>
+            Predmet e-mailu (pri automatickej kampani ho môže pripraviť AI)
+            <input name="subject_template" maxlength="255" value="{{ form.get('subject_template', '') if form else '' }}" placeholder="Krátka otázka k spolupráci">
         </label>
-        <p class="muted small">Podporované premenné: <code>{company_name}</code>, <code>{municipality}</code>, <code>{ico}</code>. Každý text bude pred odoslaním editovateľný.</p>
-        <label class="limit-field">
-            Denný limit odoslaní
-            <input type="number" name="daily_limit" min="1" max="100" value="{{ form.get('daily_limit', 20) if form else 20 }}">
+        <label>
+            Základný text (pri automatickej kampani ho môže pripraviť AI)
+            <textarea name="body_template" rows="10" placeholder="Dobrý deň, {company_name}, ...">{{ form.get('body_template', '') if form else '' }}</textarea>
         </label>
+        <p class="muted small">Podporované premenné: <code>{company_name}</code>, <code>{municipality}</code>, <code>{ico}</code>. Pri validačnom teste musí text otvorene hovoriť, že produkt pripravuješ alebo overuješ.</p>
+        <div class="grid grid-5 limits-grid">
+            <label>
+                Celkový cieľ
+                <input type="number" name="target_total" min="1" max="1000" value="{{ form.get('target_total', 50) if form else 50 }}">
+            </label>
+            <label>
+                Denná dávka
+                <input type="number" name="batch_size" min="1" max="100" value="{{ form.get('batch_size', 10) if form else 10 }}">
+            </label>
+            <label>
+                Denný limit
+                <input type="number" name="daily_limit" min="1" max="100" value="{{ form.get('daily_limit', 10) if form else 10 }}">
+            </label>
+            <label>
+                Follow-up o dní
+                <input type="number" name="follow_up_days" min="1" max="90" value="{{ form.get('follow_up_days', 7) if form else 7 }}">
+            </label>
+            <label>
+                Odstup od oslovenia (dni)
+                <input type="number" name="contact_cooldown_days" min="0" max="3650" value="{{ form.get('contact_cooldown_days', 90) if form else 90 }}">
+            </label>
+        </div>
+        <p class="muted small">Automatická kampaň sa vytvorí ako koncept. Až jej aktivácia schváli budúce dávky na externé odosielanie.</p>
         <div class="form-actions">
             <button type="submit">Vytvoriť kampaň</button>
         </div>
@@ -56,8 +93,11 @@
     .campaign-form { display: grid; gap: 14px; }
     .campaign-form label { display: grid; gap: 7px; }
     .equal-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .limit-field { max-width: 220px; }
+    .checkbox-field { display: flex !important; flex-direction: row; align-items: center; padding-top: 28px; }
+    .checkbox-field input { width: auto; }
+    .limits-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
     code { padding: 2px 5px; border-radius: 5px; background: var(--panel-soft); }
-    @media (max-width: 720px) { .equal-grid { grid-template-columns: 1fr; } }
+    @media (max-width: 900px) { .limits-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    @media (max-width: 720px) { .equal-grid, .limits-grid { grid-template-columns: 1fr; } }
 </style>
 {% endblock %}

@@ -1,0 +1,157 @@
+{% extends "base.html" %}
+
+{% block title %}Landing page · {{ campaign.name }}{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <p class="muted small">Kampaň · {{ campaign.name }}</p>
+        <h2 class="page-title">Landing page</h2>
+        <p class="page-subtitle">Jedna pevná šablóna. Uprav iba obsah, obrázok a kontaktný e-mail.</p>
+    </div>
+    <div class="form-actions editor-actions">
+        <a class="btn btn-secondary" href="{{ url_for('campaigns.campaign_detail', campaign_id=campaign.id) }}">Späť ku kampani</a>
+        <a class="btn btn-secondary" href="{{ preview_url }}" target="_blank" rel="noopener">Otvoriť náhľad</a>
+        {% if landing_page.status == 'published' %}
+            <a class="btn" href="{{ public_url }}" target="_blank" rel="noopener">Verejná stránka</a>
+        {% endif %}
+    </div>
+</div>
+
+<section class="card section-gap page-state">
+    <div>
+        <span class="badge status-{{ landing_page.status }}">{{ landing_page.status }}</span>
+        <strong>{{ public_url }}</strong>
+        <p class="muted small">Koncept nie je na verejnej URL dostupný. Po publikovaní sa odkaz pridá do novo pripravených e-mailov, ak je na VPS nastavená verejná HTTPS adresa.</p>
+    </div>
+</section>
+
+{% if missing_operator_config %}
+<section class="card section-gap">
+    <div class="flash flash-warning">
+        Publikovanie je zablokované, kým na serveri nedoplníš identitu prevádzkovateľa:
+        <strong>{{ missing_operator_config|join(', ') }}</strong>.
+    </div>
+</section>
+{% else %}
+<section class="card section-gap">
+    <h3 class="card-title">Prevádzkovateľ verejnej stránky</h3>
+    <p class="muted small">
+        {{ operator_identity.name }} · {{ operator_identity.address }} · IČO {{ operator_identity.ico }} ·
+        {{ operator_identity.phone }} · {{ operator_identity.register }}
+    </p>
+</section>
+{% endif %}
+
+<form method="post" action="{{ url_for('landing_pages.update_landing_page', campaign_id=campaign.id) }}" class="landing-editor">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+    <section class="card section-gap editor-section">
+        <div>
+            <h3 class="card-title">Základ stránky</h3>
+            <p class="card-description">Nadpis musí jednou vetou vysvetliť výsledok pre zákazníka.</p>
+        </div>
+        <div class="grid grid-2 editor-grid">
+            <label>Názov značky<input name="brand_name" maxlength="120" required value="{{ content.get('brand_name', '') }}"></label>
+            <label>URL slug<input name="slug" maxlength="100" required value="{{ landing_page.slug }}"></label>
+        </div>
+        <label>Krátky štítok<input name="eyebrow" maxlength="120" required value="{{ content.get('eyebrow', '') }}"></label>
+        <label>Hlavný nadpis<input name="headline" maxlength="200" required value="{{ content.get('headline', '') }}"></label>
+        <label>Vysvetlenie<textarea name="subheadline" rows="3" required>{{ content.get('subheadline', '') }}</textarea></label>
+        <div class="grid grid-2 editor-grid">
+            <label>HTTPS adresa obrázka<input name="hero_image_url" maxlength="1000" value="{{ landing_page.hero_image_url or '' }}" placeholder="https://..."></label>
+            <label>Popis obrázka<input name="hero_image_alt" maxlength="255" value="{{ landing_page.hero_image_alt or '' }}" placeholder="Čo je na obrázku"></label>
+        </div>
+    </section>
+
+    <section class="card section-gap editor-section">
+        <div class="grid grid-2 editor-grid">
+            <div>
+                <h3 class="card-title">Problém zákazníka</h3>
+                <label>Nadpis<input name="problem_title" maxlength="200" required value="{{ content.get('problem_title', '') }}"></label>
+                <label>Text<textarea name="problem_text" rows="6" required>{{ content.get('problem_text', '') }}</textarea></label>
+            </div>
+            <div>
+                <h3 class="card-title">Čo zákazník kupuje</h3>
+                <label>Nadpis<input name="solution_title" maxlength="200" required value="{{ content.get('solution_title', '') }}"></label>
+                <label>Text<textarea name="solution_text" rows="6" required>{{ content.get('solution_text', '') }}</textarea></label>
+            </div>
+        </div>
+    </section>
+
+    <section class="card section-gap editor-section">
+        <h3 class="card-title">Tri hlavné prínosy</h3>
+        <div class="grid grid-3 repeat-grid">
+            {% set benefits = content.get('benefits', []) %}
+            {% for index in range(3) %}
+                {% set item = benefits[index] if benefits|length > index else {} %}
+                <div class="subcard">
+                    <label>Nadpis {{ index + 1 }}<input name="benefit_title_{{ index + 1 }}" maxlength="120" required value="{{ item.get('title', '') }}"></label>
+                    <label>Vysvetlenie<textarea name="benefit_text_{{ index + 1 }}" rows="5" required>{{ item.get('text', '') }}</textarea></label>
+                </div>
+            {% endfor %}
+        </div>
+    </section>
+
+    <section class="card section-gap editor-section">
+        <h3 class="card-title">Ako to funguje</h3>
+        <label>Nadpis sekcie<input name="process_title" maxlength="200" required value="{{ content.get('process_title', '') }}"></label>
+        <div class="grid grid-3 repeat-grid">
+            {% set steps = content.get('steps', []) %}
+            {% for index in range(3) %}
+                {% set item = steps[index] if steps|length > index else {} %}
+                <div class="subcard">
+                    <label>Krok {{ index + 1 }}<input name="step_title_{{ index + 1 }}" maxlength="120" required value="{{ item.get('title', '') }}"></label>
+                    <label>Vysvetlenie<textarea name="step_text_{{ index + 1 }}" rows="5" required>{{ item.get('text', '') }}</textarea></label>
+                </div>
+            {% endfor %}
+        </div>
+    </section>
+
+    <section class="card section-gap editor-section">
+        <div class="grid grid-2 editor-grid">
+            <div>
+                <h3 class="card-title">Pre koho to je</h3>
+                <label>Nadpis<input name="audience_title" maxlength="200" required value="{{ content.get('audience_title', '') }}"></label>
+                <label>Text<textarea name="audience_text" rows="5" required>{{ content.get('audience_text', '') }}</textarea></label>
+            </div>
+            <div>
+                <h3 class="card-title">Výzva ku kontaktu</h3>
+                <label>Nadpis<input name="cta_title" maxlength="200" required value="{{ content.get('cta_title', '') }}"></label>
+                <label>Text<textarea name="cta_text" rows="3" required>{{ content.get('cta_text', '') }}</textarea></label>
+                <label>Text tlačidla<input name="cta_label" maxlength="100" required value="{{ content.get('cta_label', '') }}"></label>
+                <label>Kontaktný e-mail<input type="email" name="contact_email" maxlength="255" value="{{ landing_page.contact_email or '' }}"></label>
+            </div>
+        </div>
+        <label>Popis pre vyhľadávače<textarea name="meta_description" rows="2" maxlength="300" required>{{ content.get('meta_description', '') }}</textarea></label>
+    </section>
+
+    <section class="card publish-bar">
+        <div>
+            <strong>Najprv ulož a skontroluj náhľad.</strong>
+            <p class="muted small">Publikovanie sprístupní stránku každému, kto pozná verejnú URL.</p>
+        </div>
+        <div class="form-actions">
+            <button class="btn btn-secondary" type="submit" name="action" value="save">{% if landing_page.status == 'published' %}Uložiť zmeny na verejnej stránke{% else %}Uložiť koncept{% endif %}</button>
+            {% if landing_page.status == 'published' %}
+                <button class="btn btn-danger" type="submit" name="action" value="unpublish" onclick="return confirm('Stiahnuť landing page z verejnej URL?');">Stiahnuť</button>
+            {% else %}
+                <button type="submit" name="action" value="publish" onclick="return confirm('Publikovať túto landing page?');">Publikovať</button>
+            {% endif %}
+        </div>
+    </section>
+</form>
+
+<style>
+    .editor-actions { margin-top: 0; }
+    .page-state, .publish-bar { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+    .page-state strong { display: block; margin-top: 8px; overflow-wrap: anywhere; }
+    .editor-section { display: grid; gap: 14px; }
+    .editor-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .repeat-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .subcard { padding: 14px; border: 1px solid var(--border-soft); border-radius: 12px; background: var(--panel-soft); }
+    .subcard label:first-child { margin-top: 0; }
+    @media (max-width: 900px) { .repeat-grid { grid-template-columns: 1fr; } }
+    @media (max-width: 720px) { .editor-grid { grid-template-columns: 1fr; } .page-state, .publish-bar { align-items: stretch; flex-direction: column; } }
+</style>
+{% endblock %}

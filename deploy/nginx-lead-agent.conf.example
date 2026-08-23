@@ -1,0 +1,25 @@
+# Internal CRM remains protected. Replace placeholders before enabling this file.
+server {
+    listen 443 ssl http2;
+    server_name lead.gallax.io;
+
+    ssl_certificate /etc/letsencrypt/live/lead.gallax.io/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/lead.gallax.io/privkey.pem;
+
+    location ^~ /ponuka/ {
+        auth_basic off;
+        proxy_pass http://127.0.0.1:8050;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
+    location / {
+        auth_basic "Lead Agent";
+        auth_basic_user_file /etc/nginx/.htpasswd-lead-agent;
+        proxy_pass http://127.0.0.1:8050;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}

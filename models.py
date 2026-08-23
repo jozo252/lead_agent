@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import UniqueConstraint
+from sqlalchemy import Index, UniqueConstraint
 from extensions import db
 
 def utcnow() -> datetime:
@@ -497,6 +497,20 @@ class Campaign(db.Model):
         index=True,
     )
     daily_limit = db.Column(db.Integer, nullable=False, default=20)
+    automation_enabled = db.Column(db.Boolean, nullable=False, default=False)
+    offer_stage = db.Column(db.String(20), nullable=False, default="ready")
+    targeting_profile = db.Column(db.JSON, nullable=True)
+    target_total = db.Column(db.Integer, nullable=False, default=50)
+    batch_size = db.Column(db.Integer, nullable=False, default=10)
+    follow_up_days = db.Column(db.Integer, nullable=False, default=7)
+    contact_cooldown_days = db.Column(db.Integer, nullable=False, default=90)
+    activated_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    last_automation_run_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    last_automation_error = db.Column(db.Text, nullable=True)
+    last_run_summary = db.Column(db.JSON, nullable=True)
+    delivery_lock_token = db.Column(db.String(64), nullable=True)
+    delivery_locked_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    completed_at = db.Column(db.DateTime(timezone=True), nullable=True)
     created_at = db.Column(
         db.DateTime(timezone=True),
         nullable=False,
@@ -515,6 +529,49 @@ class Campaign(db.Model):
         cascade="all, delete-orphan",
         order_by="CampaignRecipient.created_at",
     )
+    landing_page = db.relationship(
+        "LandingPage",
+        back_populates="campaign",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+
+
+class LandingPage(db.Model):
+    __tablename__ = "landing_pages"
+    __table_args__ = (
+        UniqueConstraint("campaign_id", name="uq_landing_page_campaign"),
+        UniqueConstraint("slug", name="uq_landing_page_slug"),
+        UniqueConstraint("preview_token", name="uq_landing_page_preview_token"),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    campaign_id = db.Column(
+        db.Integer,
+        db.ForeignKey("campaigns.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    slug = db.Column(db.String(120), nullable=False)
+    preview_token = db.Column(db.String(64), nullable=False)
+    status = db.Column(db.String(20), nullable=False, default="draft")
+    content = db.Column(db.JSON, nullable=False)
+    hero_image_url = db.Column(db.String(1000), nullable=True)
+    hero_image_alt = db.Column(db.String(255), nullable=True)
+    contact_email = db.Column(db.String(255), nullable=True)
+    published_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=utcnow,
+    )
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=utcnow,
+        onupdate=utcnow,
+    )
+
+    campaign = db.relationship("Campaign", back_populates="landing_page")
 
 
 class CampaignRecipient(db.Model):
@@ -524,6 +581,11 @@ class CampaignRecipient(db.Model):
             "campaign_id",
             "company_id",
             name="uq_campaign_recipient_company",
+        ),
+        Index(
+            "ix_campaign_recipient_campaign_attempt",
+            "campaign_id",
+            "sending_started_at",
         ),
     )
 
@@ -548,6 +610,9 @@ class CampaignRecipient(db.Model):
     recipient_email = db.Column(db.String(255), nullable=False)
     subject = db.Column(db.String(255), nullable=False)
     body = db.Column(db.Text, nullable=False)
+    fit_score = db.Column(db.Integer, nullable=True)
+    fit_reason = db.Column(db.Text, nullable=True)
+    selection_source = db.Column(db.String(30), nullable=True)
     status = db.Column(
         db.String(30),
         nullable=False,
@@ -556,6 +621,7 @@ class CampaignRecipient(db.Model):
     )
     last_error = db.Column(db.Text, nullable=True)
     approved_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    sending_started_at = db.Column(db.DateTime(timezone=True), nullable=True)
     sent_at = db.Column(db.DateTime(timezone=True), nullable=True)
     replied_at = db.Column(db.DateTime(timezone=True), nullable=True)
     created_at = db.Column(

@@ -160,6 +160,73 @@ odpovediam a zákazkám. Až potom škálovať enrichment alebo riešiť predaj 
 
 1. Vytvoriť jednu konkrétnu ponuku a nastaviť denný limit najviac 10–20 správ.
 2. Vyfiltrovať 20–30 firiem podľa SK NACE, radiusu a dostupného e-mailu.
-3. Manuálne overiť kontakt a schváliť každý návrh osobitne.
+3. Pri manuálnej kampani overiť kontakt a schváliť každý návrh osobitne;
+   pri automatickej kampani schváliť celý experiment až po kontrole zacielenia
+   a základného textu.
 4. Merať doručenie, odpoveď, pozitívny záujem a dohodnutý ďalší krok.
 5. Chatové ovládanie pridať až po overení tohto deterministického workflow.
+
+## Automatické produktové kampane
+
+Automatická kampaň je riadený experiment, nie neobmedzený agent:
+
+1. Zadaj produkt, štádium ponuky (hotová alebo validačný test), voliteľný opis
+   zákazníka, celkový cieľ a dennú dávku.
+2. AI pripraví úzky profil zákazníka, vyhľadávacie výrazy a základný e-mail.
+3. Pred aktiváciou skontroluj a podľa potreby uprav zacielenie aj text.
+4. Tlačidlo `Vybrať firmy zo SK NACE` použije pripravené SK NACE a firemné
+   kľúčové slová, AI firmy zoradí a uloží ich ako koncepty bez odoslania.
+5. Aktivácia kampane schváli automaticky vybrané koncepty aj budúce denné dávky.
+6. Každý denný beh vyberie ďalších kandidátov z databázy, AI ich zoradí, pre vybrané
+   firmy doplní kontakt, odošle najviac povolenú dávku a vytvorí CRM lead.
+7. Stav `paused` alebo `completed` ďalšie spracovanie okamžite zastaví.
+
+Jednu dávku možno spustiť tlačidlom v detaile kampane. Pre pravidelný beh má
+operačný scheduler spustiť raz denne:
+
+```powershell
+python -m flask run-campaigns
+```
+
+Príkaz je idempotentný v rámci UTC dňa a vždy znovu kontroluje suppression,
+cooldown, denný limit a celkový cieľ. Prepínač `--force` je iba na vedomé
+opakovanie dávky; limity zostávajú aktívne. Scheduler ani živá kampaň sa pri
+lokálnej implementácii automaticky nezapínajú.
+
+## Landing page ku kampani
+
+Každá kampaň môže mať jednu jednoduchú verejnú landing page:
+
+1. V detaile kampane klikni na `Vytvoriť landing page`.
+2. AI pripraví štruktúrovaný koncept; ak AI nie je dostupná, vytvorí sa
+   upraviteľný základ z údajov kampane.
+3. Uprav nadpis, problém, opis riešenia, tri prínosy, tri kroky, cieľovú
+   skupinu, kontakt a voliteľnú HTTPS adresu obrázka.
+4. Skontroluj tajný náhľad a až potom stránku publikuj.
+5. Verejná adresa má tvar `/ponuka/<slug>`. Koncept na nej vracia 404.
+
+Na VPS nastav v `.env` verejnú HTTPS adresu aplikácie, napríklad:
+
+```dotenv
+PUBLIC_BASE_URL=https://lead.gallax.io
+```
+
+Ak je landing page publikovaná a `PUBLIC_BASE_URL` je platná HTTPS adresa,
+Lead Agent pridá jej odkaz do novo pripravených kampaňových e-mailov pred
+odhlasovaciu vetu. Už existujúce návrhy príjemcov sa spätne neprepisujú.
+
+## Bezpečné produkčné spustenie
+
+Pred prvou externou dávkou:
+
+1. Vytvoriť čerstvú SQLite zálohu cez SQLite backup mechanizmus a overiť, že sa dá otvoriť.
+2. Commitnúť a na kópii databázy overiť všetky Alembic migrácie.
+3. Na VPS nastaviť `APP_ENV=production` a silný unikátny `SECRET_KEY`.
+4. Doplniť `LANDING_OPERATOR_*` hodnoty; bez kompletnej identity sa landing page
+   nesmie publikovať.
+5. V Nginxe vypnúť Basic Auth iba pre `location ^~ /ponuka/`; všetky CRM routy
+   musia zostať chránené. Vzor je v `deploy/nginx-lead-agent.conf.example`.
+6. Scheduler `run-campaigns` spúšťať iba v jednej inštancii. Databázový zámok
+   kampane je poistka proti súbehu s ručným spustením, nie náhrada za správnu prevádzku.
+7. Najprv poslať testy na vlastné adresy, overiť IMAP párovanie, automatický
+   opt-out a až potom schváliť malú dávku externých príjemcov.

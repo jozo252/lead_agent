@@ -20,6 +20,7 @@
             <div class="card-header">
                 <div>
                     <span class="badge">{{ offer_types.get(campaign.offer_type, campaign.offer_type) }}</span>
+                    {% if campaign.automation_enabled %}<span class="badge">AI {{ campaign.batch_size }}/deň</span>{% endif %}
                     <h3 class="campaign-name">{{ campaign.name }}</h3>
                 </div>
                 <span class="badge">{{ campaign.status }}</span>
@@ -30,6 +31,7 @@
                 <span><strong>{{ campaign.recipients|selectattr('sent_at')|list|length }}</strong> odoslaných</span>
                 <span><strong>{{ campaign.recipients|selectattr('replied_at')|list|length }}</strong> odpovedí</span>
             </div>
+            {% if campaign.automation_enabled %}<p class="muted small">Cieľ: {{ campaign.target_total }} firiem · {{ campaign.offer_stage }}</p>{% endif %}
             <a class="btn btn-secondary" href="{{ url_for('campaigns.campaign_detail', campaign_id=campaign.id) }}">Otvoriť kampaň</a>
         </article>
     {% else %}

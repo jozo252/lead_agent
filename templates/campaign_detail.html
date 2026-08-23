@@ -7,6 +7,8 @@
     <div>
         <div class="form-actions compact-actions">
             <span class="badge">{{ offer_types.get(campaign.offer_type, campaign.offer_type) }}</span>
+            <span class="badge">{{ offer_stages.get(campaign.offer_stage, campaign.offer_stage) }}</span>
+            {% if campaign.automation_enabled %}<span class="badge">AI automatizácia</span>{% endif %}
             <span class="badge">{{ campaign.status }}</span>
         </div>
         <h2 class="page-title">{{ campaign.name }}</h2>
@@ -21,7 +23,7 @@
 <section class="card section-gap status-panel">
     <div>
         <h3 class="card-title">Stav kampane</h3>
-        <p class="muted small">Pozastavená alebo ukončená kampaň neposiela ďalšie e-maily.</p>
+        <p class="muted small">Pozastavená alebo ukončená kampaň neposiela ďalšie e-maily. Pri AI kampani aktivácia schvaľuje aj budúce automaticky pripravené dávky.</p>
     </div>
     <form method="post" action="{{ url_for('campaigns.update_campaign_status', campaign_id=campaign.id) }}" class="status-form">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -30,9 +32,122 @@
                 <option value="{{ value }}" {% if campaign.status == value %}selected{% endif %}>{{ label }}</option>
             {% endfor %}
         </select>
-        <button class="btn btn-secondary" type="submit">Uložiť stav</button>
+        <button class="btn btn-secondary" type="submit" {% if campaign.automation_enabled %}onclick="return this.form.status.value !== 'active' || confirm('Aktiváciou AI kampane schvaľuješ budúce denné dávky na externé odosielanie. Pokračovať?');"{% endif %}>Uložiť stav</button>
     </form>
 </section>
+
+<section class="card section-gap landing-page-panel">
+    <div>
+        <h3 class="card-title">Landing page k ponuke</h3>
+        {% if campaign.landing_page %}
+            <p class="muted small">
+                Stav: <span class="badge">{{ campaign.landing_page.status }}</span>
+                · Verejná cesta: /ponuka/{{ campaign.landing_page.slug }}
+            </p>
+        {% else %}
+            <p class="muted small">AI pripraví jeden upraviteľný koncept z obsahu kampane. Verejný bude až po tvojom schválení.</p>
+        {% endif %}
+    </div>
+    <div class="form-actions compact-actions">
+        {% if campaign.landing_page %}
+            <a class="btn btn-secondary" href="{{ url_for('landing_pages.edit_landing_page', campaign_id=campaign.id) }}">Upraviť stránku</a>
+            <a class="btn btn-secondary" href="{{ url_for('landing_pages.public_landing_page', slug=campaign.landing_page.slug, preview=campaign.landing_page.preview_token) }}" target="_blank" rel="noopener">Náhľad</a>
+            {% if campaign.landing_page.status == 'published' %}
+                <a class="btn" href="{{ url_for('landing_pages.public_landing_page', slug=campaign.landing_page.slug) }}" target="_blank" rel="noopener">Otvoriť verejnú</a>
+            {% endif %}
+        {% else %}
+            <form method="post" action="{{ url_for('landing_pages.create_landing_page', campaign_id=campaign.id) }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit">Vytvoriť landing page</button>
+            </form>
+        {% endif %}
+    </div>
+</section>
+
+{% if campaign.automation_enabled %}
+<section class="card section-gap automation-panel">
+    <div>
+        <h3 class="card-title">Automatický experiment</h3>
+        <p class="muted small">
+            Denná dávka {{ campaign.batch_size }}, celkový cieľ {{ campaign.target_total }},
+            denný limit {{ campaign.daily_limit }}, odstup od posledného oslovenia
+            {{ campaign.contact_cooldown_days }} dní, follow-up po {{ campaign.follow_up_days }} dňoch.
+        </p>
+        {% if campaign.targeting_profile %}
+            <p><strong>Ideálny zákazník:</strong> {{ campaign.targeting_profile.get('ideal_customer_profile', '—') }}</p>
+            <p class="muted small">
+                SK NACE/kľúčové slová:
+                {% for keyword in campaign.targeting_profile.get('nace_keywords', []) + campaign.targeting_profile.get('company_keywords', []) %}
+                    <span class="badge">{{ keyword }}</span>
+                {% endfor %}
+            </p>
+            <p class="muted small">
+                Lokalita:
+                {% for location in campaign.targeting_profile.get('location_keywords', []) %}
+                    <span class="badge">{{ location }}</span>
+                {% else %}
+                    <span class="badge">celé Slovensko</span>
+                {% endfor %}
+            </p>
+        {% endif %}
+        {% if campaign.last_automation_error %}<p class="flash flash-warning">{{ campaign.last_automation_error }}</p>{% endif %}
+        {% if campaign.last_automation_run_at %}<p class="muted small">Posledný beh: {{ campaign.last_automation_run_at }}</p>{% endif %}
+        <details>
+            <summary>Zobraziť predmet a základný text</summary>
+            <div class="details-body"><strong>{{ campaign.subject_template }}</strong><pre>{{ campaign.body_template }}</pre></div>
+        </details>
+    </div>
+    {% if campaign.status == 'active' %}
+        <form method="post" action="{{ url_for('campaigns.run_automation_now', campaign_id=campaign.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit" onclick="return confirm('Spustiť dnešnú dávku? Môže obohatiť kontakty a odoslať e-maily externým firmám.');">Spustiť dnešnú dávku</button>
+        </form>
+    {% elif campaign.status in ['draft', 'paused'] %}
+        <form method="post" action="{{ url_for('campaigns.select_automatic_companies', campaign_id=campaign.id) }}" class="selection-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <label>Počet firiem
+                <input type="number" name="selection_count" min="1" max="100" value="{{ campaign.batch_size }}">
+            </label>
+            <button type="submit">Vybrať firmy zo SK NACE</button>
+            <p class="muted small">Výber firmy iba pripraví a obohatí; nič sa ešte neodošle.</p>
+        </form>
+    {% else %}
+        <p class="muted small">Kampaň je ukončená.</p>
+    {% endif %}
+</section>
+
+{% if campaign.status != 'active' %}
+<section class="card section-gap">
+    <h3 class="card-title">Upraviť AI zacielenie pred aktiváciou</h3>
+    <form method="post" action="{{ url_for('campaigns.update_automation_settings', campaign_id=campaign.id) }}" class="automation-settings-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <label>Ideálny zákazník<input name="ideal_customer_profile" value="{{ campaign.targeting_profile.get('ideal_customer_profile', '') if campaign.targeting_profile else '' }}"></label>
+        <div class="grid grid-2 equal-grid">
+            <label>SK NACE výrazy, oddelené čiarkou<input name="nace_keywords" value="{{ campaign.targeting_profile.get('nace_keywords', [])|join(', ') if campaign.targeting_profile else '' }}"></label>
+            <label>Firemné výrazy, oddelené čiarkou<input name="company_keywords" value="{{ campaign.targeting_profile.get('company_keywords', [])|join(', ') if campaign.targeting_profile else '' }}"></label>
+        </div>
+        <label>Obce/lokality, oddelené čiarkou<input name="location_keywords" value="{{ campaign.targeting_profile.get('location_keywords', [])|join(', ') if campaign.targeting_profile else '' }}" placeholder="Napr. Bratislava, Pezinok, Senec"></label>
+        <label>Predmet<input name="subject_template" maxlength="255" required value="{{ campaign.subject_template }}"></label>
+        <label>Základný text<textarea name="body_template" rows="8" required>{{ campaign.body_template }}</textarea></label>
+        <div class="grid grid-6 limits-grid">
+            <label>Min. zhoda<input type="number" name="minimum_fit_score" min="0" max="100" value="{{ campaign.targeting_profile.get('minimum_fit_score', 60) if campaign.targeting_profile else 60 }}"></label>
+            <label>Celkový cieľ<input type="number" name="target_total" min="1" max="1000" value="{{ campaign.target_total }}"></label>
+            <label>Dávka<input type="number" name="batch_size" min="1" max="100" value="{{ campaign.batch_size }}"></label>
+            <label>Denný limit<input type="number" name="daily_limit" min="1" max="100" value="{{ campaign.daily_limit }}"></label>
+            <label>Follow-up dní<input type="number" name="follow_up_days" min="1" max="90" value="{{ campaign.follow_up_days }}"></label>
+            <label>Odstup dní<input type="number" name="contact_cooldown_days" min="0" max="3650" value="{{ campaign.contact_cooldown_days }}"></label>
+        </div>
+        <button class="btn btn-secondary" type="submit">Uložiť nastavenie</button>
+    </form>
+    {% if not campaign.recipients %}
+        <form method="post" action="{{ url_for('campaigns.regenerate_automatic_targeting', campaign_id=campaign.id) }}" class="form-actions">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button class="btn btn-secondary" type="submit">Regenerovať zacielenie z názvu kampane</button>
+        </form>
+    {% endif %}
+</section>
+{% endif %}
+{% endif %}
 
 <section class="grid grid-4 section-gap">
     <article class="stat-card"><span class="number">{{ campaign.recipients|length }}</span><span class="label">Príjemcov</span></article>
@@ -71,6 +186,7 @@
                 <div>
                     <h3 class="card-title"><a href="{{ url_for('main.company_detail', company_id=recipient.company.id) }}">{{ recipient.company.official_name }}</a></h3>
                     <p class="card-description">{{ recipient.recipient_email }} · {{ recipient.company.municipality or 'obec neznáma' }} · IČO {{ recipient.company.ico or '—' }}</p>
+                    {% if recipient.fit_score is not none %}<p class="muted small">Zhoda {{ recipient.fit_score }}/100 · {{ recipient.fit_reason or 'bez odôvodnenia' }}</p>{% endif %}
                 </div>
                 <span class="badge status-{{ recipient.status }}">{{ recipient.status }}</span>
             </div>
@@ -116,9 +232,15 @@
 
 <style>
     .compact-actions { margin: 0 0 8px; }
-    .status-panel, .send-panel, .send-form, .outcome-form { display: flex; align-items: end; gap: 12px; justify-content: space-between; }
+    .status-panel, .landing-page-panel, .automation-panel, .send-panel, .send-form, .outcome-form { display: flex; align-items: end; gap: 12px; justify-content: space-between; }
     .send-form input { width: 100px; }
+    .selection-form { min-width: 230px; }
+    .selection-form label { margin-top: 0; }
     .recipient-list { display: grid; gap: 18px; }
+    .automation-settings-form { display: grid; gap: 12px; }
+    .automation-settings-form label { display: grid; gap: 6px; }
+    .equal-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .limits-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); }
     .recipient-form { display: grid; gap: 10px; }
     .recipient-form label { display: grid; gap: 6px; }
     .outcome-form { justify-content: flex-start; margin-top: 12px; }
@@ -127,6 +249,7 @@
     .status-sent, .status-interested { border-color: #86efac; color: #15803d; }
     .status-failed, .status-bounced, .status-opted_out { border-color: #fca5a5; color: #b91c1c; }
     pre { white-space: pre-wrap; overflow-wrap: anywhere; }
-    @media (max-width: 720px) { .send-panel, .send-form, .outcome-form { align-items: stretch; flex-direction: column; } }
+    @media (max-width: 900px) { .limits-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    @media (max-width: 720px) { .landing-page-panel, .automation-panel, .send-panel, .send-form, .outcome-form { align-items: stretch; flex-direction: column; } .equal-grid, .limits-grid { grid-template-columns: 1fr; } }
 </style>
 {% endblock %}

@@ -83,6 +83,7 @@
             <article class="reply-card"><strong>{{ reply.subject or "Bez predmetu" }}</strong><p class="muted small">Od: {{ reply.from_name or reply.from_email }} · {% if reply.received_at %}{{ reply.received_at.strftime('%d.%m.%Y %H:%M') }}{% endif %}</p><div class="content-panel">{{ reply.text_body or "Bez textu" }}</div>
                 <form method="post" action="{{ url_for('main.generate_reply', reply_id=reply.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button type="submit" class="btn btn-small btn-secondary">Vygenerovať odpoveď</button></form>
                 {% if reply.ai_reply_draft %}<form method="post" action="{{ url_for('main.send_reply', reply_id=reply.id) }}" class="lead-form"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><label>Návrh odpovede<textarea name="reply_body" rows="7">{{ reply.ai_reply_draft }}</textarea></label><button type="submit" onclick="return confirm('Odoslať túto odpoveď?');">Odoslať odpoveď</button></form>{% endif %}
+                <form method="post" action="{{ url_for('main.sync_lead_hubspot', lead_id=lead.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="reply_id" value="{{ reply.id }}"><button type="submit" class="btn btn-small btn-secondary" onclick="return confirm('Zapísať túto odpoveď a aktuálny stav do HubSpotu?');">Zapísať do HubSpotu</button></form>
             </article>
             {% else %}<p class="muted">Zatiaľ neprišla žiadna odpoveď.</p>{% endfor %}
         </section>

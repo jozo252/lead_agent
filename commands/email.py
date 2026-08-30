@@ -45,6 +45,7 @@ def test_smtp_command(recipient: str) -> None:
 def test_imap_command() -> None:
     """Overí IMAP prihlásenie bez čítania alebo zmeny CRM dát."""
     server = os.environ.get("IMAP_SERVER", "imap.gmail.com")
+    port = int(os.environ.get("IMAP_PORT", "993"))
     username = os.environ.get("IMAP_USERNAME")
     password = os.environ.get("IMAP_PASSWORD")
 
@@ -55,7 +56,7 @@ def test_imap_command() -> None:
 
     connection = None
     try:
-        connection = imaplib.IMAP4_SSL(server)
+        connection = imaplib.IMAP4_SSL(server, port)
         connection.login(username, password)
         status, data = connection.select("inbox", readonly=True)
 

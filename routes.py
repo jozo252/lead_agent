@@ -25,6 +25,7 @@ from services.company_filtering import (
     filtered_companies_query,
 )
 from services.crm import get_or_create_company_lead
+from services.hubspot import HubSpotError, sync_lead_to_hubspot
 from services.campaigns import (
     campaign_recipient_for_message_ids,
     mark_campaign_recipient_replied,
@@ -1357,6 +1358,37 @@ def send_reply(reply_id):
     return redirect(url_for("main.lead_detail", lead_id=reply.lead.id))
 
 
+
+
+@main_bp.route("/lead/<int:lead_id>/sync-hubspot", methods=["POST"])
+def sync_lead_hubspot(lead_id):
+    """Synchronizuje CRM až po samostatnom potvrdení používateľa."""
+    lead = Lead.query.get_or_404(lead_id)
+    reply_id = request.form.get("reply_id", type=int)
+    reply = None
+    if reply_id:
+        reply = EmailReply.query.filter_by(id=reply_id, lead_id=lead.id).first_or_404()
+
+    note_body = None
+    if reply is not None:
+        note_body = (
+            f"Prijatá odpoveď: {reply.subject or 'Bez predmetu'}\n\n"
+            f"{reply.text_body or reply.html_body or 'Bez textu'}"
+        )
+        if reply.reply_sent_at:
+            note_body += "\n\nOdpoveď používateľa bola odoslaná."
+        elif reply.ai_reply_draft:
+            note_body += "\n\nAI návrh čaká na schválenie používateľa."
+
+    try:
+        sync_lead_to_hubspot(lead, note_body=note_body)
+        db.session.commit()
+        flash("Lead bol synchronizovaný do HubSpotu.", "success")
+    except HubSpotError as exc:
+        db.session.rollback()
+        flash(f"HubSpot synchronizácia zlyhala: {exc}", "error")
+
+    return redirect(url_for("main.lead_detail", lead_id=lead.id))
 
 
 @main_bp.route("/inbox")

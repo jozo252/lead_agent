@@ -3,7 +3,11 @@ from openai import OpenAI
 import json
 
 
-client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+def _client():
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("Chýba OPENAI_API_KEY.")
+    return OpenAI(api_key=api_key)
 
 
 def generate_lead_message(lead):
@@ -39,7 +43,7 @@ S pozdravom
 Adam
 """
 
-    response = client.chat.completions.create(
+    response = _client().chat.completions.create(
         model="gpt-4.1-mini",
         messages=[
             {
@@ -99,7 +103,7 @@ Výstup vráť iba ako čistý JSON bez markdownu:
 }}
 """
 
-    response = client.chat.completions.create(
+    response = _client().chat.completions.create(
         model="gpt-4.1-mini",
         messages=[
             {

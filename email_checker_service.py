@@ -7,6 +7,7 @@ from email.utils import parseaddr, parsedate_to_datetime
 
 
 IMAP_SERVER = os.environ.get("IMAP_SERVER", "imap.gmail.com")
+IMAP_PORT = int(os.environ.get("IMAP_PORT", "993"))
 IMAP_USERNAME = os.environ.get("IMAP_USERNAME")
 IMAP_PASSWORD = os.environ.get("IMAP_PASSWORD")
 
@@ -90,7 +91,7 @@ def fetch_inbox_messages(max_messages=50):
 
     connection = None
     try:
-        connection = imaplib.IMAP4_SSL(IMAP_SERVER)
+        connection = imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT)
         connection.login(IMAP_USERNAME, IMAP_PASSWORD)
         status, _ = connection.select("inbox", readonly=True)
 
@@ -155,7 +156,7 @@ def check_reply_from_sender(
     if not sender_email:
         raise ValueError("Lead nemá email adresu.")
 
-    mail = imaplib.IMAP4_SSL(IMAP_SERVER)
+    mail = imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT)
     mail.login(IMAP_USERNAME, IMAP_PASSWORD)
     mail.select("inbox")
 

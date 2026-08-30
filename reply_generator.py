@@ -1,6 +1,13 @@
+import os
+
 from openai import OpenAI
 
-client = OpenAI()
+
+def _client():
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("Chýba OPENAI_API_KEY.")
+    return OpenAI(api_key=api_key)
 
 
 def generate_reply_to_customer(lead, reply):
@@ -38,7 +45,7 @@ Bez markdownu.
 Len čistý text emailu.
 """
 
-    response = client.chat.completions.create(
+    response = _client().chat.completions.create(
         model="gpt-4o-mini",
         messages=[
             {

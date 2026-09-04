@@ -263,6 +263,47 @@ class CampaignWorkflowTests(unittest.TestCase):
             200,
         )
 
+    def test_campaign_can_store_disabled_scout_configuration(self):
+        response = self.client.post(
+            "/campaigns/new",
+            data={
+                "name": "Elektro zákazky",
+                "offer_type": "service",
+                "offer_description": "Elektroinštalácie a subdodávky",
+                "subject_template": "Ponuka elektro spolupráce",
+                "body_template": "Dobrý deň, ponúkam elektro práce.",
+                "business_line": "electrical",
+                "scout_queries": "elektro subdodávateľ Slovensko\nRFQ electrical Slovakia",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        campaign = Campaign.query.one()
+        self.assertEqual(campaign.business_line, "electrical")
+        self.assertFalse(campaign.scout_enabled)
+        self.assertEqual(
+            campaign.scout_queries,
+            ["elektro subdodávateľ Slovensko", "RFQ electrical Slovakia"],
+        )
+
+    def test_enabled_scout_requires_a_query(self):
+        response = self.client.post(
+            "/campaigns/new",
+            data={
+                "name": "Stavebné zákazky",
+                "offer_type": "service",
+                "offer_description": "Stavebné práce",
+                "subject_template": "Ponuka",
+                "body_template": "Dobrý deň.",
+                "business_line": "construction",
+                "scout_enabled": "on",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Campaign.query.count(), 0)
+        self.assertIn("aspoň jeden vyhľadávací dotaz".encode(), response.data)
+
     @patch("campaign_routes.generate_campaign_plan")
     def test_automated_campaign_can_generate_targeting_from_product(self, generate_plan):
         generate_plan.return_value = {

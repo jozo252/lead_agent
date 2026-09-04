@@ -193,6 +193,26 @@ cooldown, denný limit a celkový cieľ. Prepínač `--force` je iba na vedomé
 opakovanie dávky; limity zostávajú aktívne. Scheduler ani živá kampaň sa pri
 lokálnej implementácii automaticky nezapínajú.
 
+## Lovec zákaziek
+
+Každá kampaň môže patriť do odboru stavebníctvo, elektro alebo softvér a mať
+vlastný zoznam vyhľadávacích dotazov. Lovec používa Brave Search, ukladá názov,
+URL, opis, dôkazy a jednoduché skóre zhody. Rovnakú URL v rámci kampane uloží iba
+raz a ďalší nález ju obnoví.
+
+Lovec je predvolene vypnutý. Nastav ho v detaile kampane, doplň `BRAVE_API_KEY`
+do lokálneho `.env`, kampaň aktivuj a spusti jeden denný beh tlačidlom alebo:
+
+```powershell
+python -m flask run-scouts
+```
+
+Konkrétnu kampaň možno spustiť cez `python -m flask run-scouts --campaign-id ID`.
+Každá kampaň sa vykoná najviac raz za UTC deň, aj keď vyhľadávanie zlyhá. Lovec
+iba číta verejné výsledky a zapisuje príležitosti. Nevytvára príjemcov, neposiela
+správy a nevytvára cenu. Ďalší krok je ručné overenie zdroja a rozhodnutie, či sa
+má príležitosť zmeniť na lead.
+
 ## Cenová brána
 
 Keď prijatá odpoveď vyžaduje cenu, otvor detail leadu a pri konkrétnej odpovedi

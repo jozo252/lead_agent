@@ -27,6 +27,14 @@
                     {% endfor %}
                 </select>
             </label>
+            <label>
+                Odbor
+                <select name="business_line" required>
+                    {% for value, label in business_lines.items() %}
+                        <option value="{{ value }}" {% if form and form.get('business_line', 'general') == value %}selected{% endif %}>{{ label }}</option>
+                    {% endfor %}
+                </select>
+            </label>
         </div>
         <label>
             Čo ponúkaš alebo hľadáš
@@ -50,6 +58,17 @@
             Cieľový segment a lokalita
             <textarea name="target_hint" rows="3" placeholder="Napr. stolári v Bratislavskom kraji alebo autoservisy s viacerými mechanikmi.">{{ form.get('target_hint', '') if form else '' }}</textarea>
         </label>
+        <div class="grid grid-2 equal-grid">
+            <label class="checkbox-field">
+                <input type="checkbox" name="scout_enabled" {% if form and form.get('scout_enabled') %}checked{% endif %}>
+                Zapnúť lovca zákaziek
+            </label>
+            <label>
+                Vyhľadávacie dotazy, jeden na riadok
+                <textarea name="scout_queries" rows="4" placeholder="stavebné práce dopyt Poprad&#10;elektroinštalácia subdodávateľ Slovensko">{{ form.get('scout_queries', '') if form else '' }}</textarea>
+            </label>
+        </div>
+        <p class="muted small">Lovec iba vyhľadá a uloží verejné príležitosti. Firmy nekontaktuje.</p>
         <label>
             Predmet e-mailu (pri automatickej kampani ho môže pripraviť AI)
             <input name="subject_template" maxlength="255" value="{{ form.get('subject_template', '') if form else '' }}" placeholder="Krátka otázka k spolupráci">

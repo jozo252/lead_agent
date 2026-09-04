@@ -1,0 +1,47 @@
+version: 1
+
+# Profily sú zámerne vypnuté. Aktivácia je povolená až po doplnení všetkých
+# povinných údajov, kontrole testovacej správy a potvrdení odosielateľa.
+profiles:
+  construction:
+    label: "Stavebné práce"
+    enabled: false
+    priority: 1
+    offer: null
+    ideal_customer: null
+    region: null
+    sources: []
+    sender_identity: null
+    language: "sk"
+    daily_limit: 5
+    pilot_total: 30
+    requires_quote_gate: true
+
+  electrical:
+    label: "Elektro"
+    enabled: false
+    priority: 2
+    offer: null
+    ideal_customer: null
+    region: null
+    sources: []
+    sender_identity: null
+    language: "sk"
+    daily_limit: 5
+    pilot_total: 30
+    requires_quote_gate: true
+
+  software:
+    label: "Softvér"
+    enabled: false
+    priority: 3
+    offer: null
+    ideal_customer: null
+    region: null
+    sources: []
+    sender_identity: null
+    language: "sk"
+    daily_limit: 5
+    pilot_total: 30
+    requires_validated_offer: true
+    requires_quote_gate: true

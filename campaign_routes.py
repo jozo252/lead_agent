@@ -9,6 +9,7 @@ from models import (
     CampaignRecipient,
     Company,
     CompanyContact,
+    Opportunity,
     Suppression,
 )
 from services.campaign_ai import CampaignAIError, generate_campaign_plan
@@ -34,6 +35,7 @@ from services.company_filtering import (
 )
 from services.postal_locations import LocationLookupError
 from services.landing_pages import ensure_landing_page_link
+from services.opportunity_scout import run_campaign_scout, validate_scout_queries
 
 
 campaign_bp = Blueprint("campaigns", __name__, url_prefix="/campaigns")
@@ -56,6 +58,12 @@ RECIPIENT_OUTCOMES = {
 OFFER_STAGES = {
     "ready": "Hotová ponuka",
     "validation": "Validačný test / pripravovaný produkt",
+}
+BUSINESS_LINES = {
+    "general": "Všeobecné",
+    "construction": "Stavebné práce",
+    "electrical": "Elektro",
+    "software": "Softvér",
 }
 
 
@@ -99,6 +107,7 @@ def new_campaign():
             "campaign_form.html",
             offer_types=OFFER_TYPES,
             offer_stages=OFFER_STAGES,
+            business_lines=BUSINESS_LINES,
         )
 
     name = request.form.get("name", "").strip()
@@ -108,6 +117,9 @@ def new_campaign():
     body_template = request.form.get("body_template", "").strip()
     offer_stage = request.form.get("offer_stage", "ready").strip()
     automation_enabled = request.form.get("automation_enabled") == "on"
+    business_line = request.form.get("business_line", "general").strip()
+    scout_enabled = request.form.get("scout_enabled") == "on"
+    raw_scout_queries = request.form.get("scout_queries", "")
     target_hint = request.form.get("target_hint", "").strip()
     daily_limit = parse_limited_integer(
         request.form.get("daily_limit"),
@@ -141,12 +153,18 @@ def new_campaign():
     )
     targeting_profile = None
 
+    scout_queries = [line.strip() for line in raw_scout_queries.splitlines() if line.strip()]
+
     if not name or len(name) > 200:
         flash("Názov kampane je povinný a môže mať najviac 200 znakov.", "error")
     elif offer_type not in OFFER_TYPES:
         flash("Vyber platný typ ponuky.", "error")
     elif offer_stage not in OFFER_STAGES:
         flash("Vyber platné štádium ponuky.", "error")
+    elif business_line not in BUSINESS_LINES:
+        flash("Vyber platný odbor.", "error")
+    elif scout_enabled and not scout_queries:
+        flash("Zapnutý lovec potrebuje aspoň jeden vyhľadávací dotaz.", "error")
     elif not offer_description:
         flash("Stručne opíš, čo ponúkaš alebo hľadáš.", "error")
     elif not automation_enabled and (not subject_template or len(subject_template) > 255):
@@ -154,6 +172,18 @@ def new_campaign():
     elif not automation_enabled and not body_template:
         flash("Text kampane nemôže byť prázdny.", "error")
     else:
+        if scout_queries:
+            try:
+                scout_queries = validate_scout_queries(scout_queries)
+            except ValueError as exc:
+                flash(str(exc), "error")
+                return render_template(
+                    "campaign_form.html",
+                    offer_types=OFFER_TYPES,
+                    offer_stages=OFFER_STAGES,
+                    business_lines=BUSINESS_LINES,
+                    form=request.form,
+                )
         if automation_enabled:
             try:
                 plan = generate_campaign_plan(
@@ -169,6 +199,7 @@ def new_campaign():
                     "campaign_form.html",
                     offer_types=OFFER_TYPES,
                     offer_stages=OFFER_STAGES,
+                    business_lines=BUSINESS_LINES,
                     form=request.form,
                 )
             targeting_profile = plan["targeting_profile"]
@@ -184,6 +215,7 @@ def new_campaign():
                     "campaign_form.html",
                     offer_types=OFFER_TYPES,
                     offer_stages=OFFER_STAGES,
+                    business_lines=BUSINESS_LINES,
                     form=request.form,
                 )
 
@@ -198,6 +230,9 @@ def new_campaign():
             body_template=body_template,
             daily_limit=daily_limit,
             automation_enabled=automation_enabled,
+            business_line=business_line,
+            scout_enabled=scout_enabled,
+            scout_queries=scout_queries or None,
             offer_stage=offer_stage,
             targeting_profile=targeting_profile,
             target_total=target_total,
@@ -220,6 +255,7 @@ def new_campaign():
         "campaign_form.html",
         offer_types=OFFER_TYPES,
         offer_stages=OFFER_STAGES,
+        business_lines=BUSINESS_LINES,
         form=request.form,
     )
 
@@ -239,6 +275,10 @@ def campaign_detail(campaign_id):
     if not target_filters:
         target_filters = {"email": "any", "contacted": "no"}
     target_filters["campaign_id"] = campaign.id
+    opportunities = Opportunity.query.filter_by(campaign_id=campaign.id).order_by(
+        Opportunity.fit_score.desc(),
+        Opportunity.discovered_at.desc(),
+    ).limit(50).all()
     return render_template(
         "campaign_detail.html",
         campaign=campaign,
@@ -246,9 +286,57 @@ def campaign_detail(campaign_id):
         sent_today=sent_today,
         offer_types=OFFER_TYPES,
         offer_stages=OFFER_STAGES,
+        business_lines=BUSINESS_LINES,
+        opportunities=opportunities,
         recipient_outcomes=RECIPIENT_OUTCOMES,
         target_companies_url=url_for("main.companies", **target_filters),
     )
+
+
+@campaign_bp.route("/<int:campaign_id>/scout-settings", methods=["POST"])
+def update_scout_settings(campaign_id):
+    campaign = Campaign.query.get_or_404(campaign_id)
+    business_line = request.form.get("business_line", "general").strip()
+    enabled = request.form.get("scout_enabled") == "on"
+    raw_queries = request.form.get("scout_queries", "")
+    queries = [line.strip() for line in raw_queries.splitlines() if line.strip()]
+
+    if business_line not in BUSINESS_LINES:
+        flash("Vyber platný odbor.", "error")
+        return redirect(url_for("campaigns.campaign_detail", campaign_id=campaign.id))
+    if enabled and not queries:
+        flash("Zapnutý lovec potrebuje aspoň jeden vyhľadávací dotaz.", "error")
+        return redirect(url_for("campaigns.campaign_detail", campaign_id=campaign.id))
+    try:
+        queries = validate_scout_queries(queries) if queries else []
+    except ValueError as exc:
+        flash(str(exc), "error")
+        return redirect(url_for("campaigns.campaign_detail", campaign_id=campaign.id))
+
+    campaign.business_line = business_line
+    campaign.scout_enabled = enabled
+    campaign.scout_queries = queries or None
+    db.session.commit()
+    flash("Nastavenie lovca zákaziek bolo uložené.", "success")
+    return redirect(url_for("campaigns.campaign_detail", campaign_id=campaign.id))
+
+
+@campaign_bp.route("/<int:campaign_id>/run-scout", methods=["POST"])
+def run_scout_now(campaign_id):
+    campaign = Campaign.query.get_or_404(campaign_id)
+    result = run_campaign_scout(campaign)
+    if result.get("error"):
+        flash(f"Lov zlyhal: {result['error']}", "error")
+    elif result.get("skipped"):
+        flash(result["skipped"], "warning")
+    else:
+        flash(
+            "Lov dokončený: "
+            f"{result['discovered']} nových a {result['refreshed']} obnovených príležitostí. "
+            "Nebola odoslaná žiadna správa.",
+            "success",
+        )
+    return redirect(url_for("campaigns.campaign_detail", campaign_id=campaign.id))
 
 
 @campaign_bp.route("/<int:campaign_id>/status", methods=["POST"])

@@ -544,6 +544,7 @@ class Campaign(db.Model):
     name = db.Column(db.String(200), nullable=False)
     offer_type = db.Column(db.String(30), nullable=False, default="service")
     offer_description = db.Column(db.Text, nullable=False)
+    business_line = db.Column(db.String(30), nullable=False, default="general")
     subject_template = db.Column(db.String(255), nullable=False)
     body_template = db.Column(db.Text, nullable=False)
     target_filters = db.Column(db.JSON, nullable=True)
@@ -555,6 +556,10 @@ class Campaign(db.Model):
     )
     daily_limit = db.Column(db.Integer, nullable=False, default=20)
     automation_enabled = db.Column(db.Boolean, nullable=False, default=False)
+    scout_enabled = db.Column(db.Boolean, nullable=False, default=False)
+    scout_queries = db.Column(db.JSON, nullable=True)
+    last_scout_run_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    last_scout_error = db.Column(db.Text, nullable=True)
     offer_stage = db.Column(db.String(20), nullable=False, default="ready")
     targeting_profile = db.Column(db.JSON, nullable=True)
     target_total = db.Column(db.Integer, nullable=False, default=50)
@@ -592,6 +597,89 @@ class Campaign(db.Model):
         cascade="all, delete-orphan",
         uselist=False,
     )
+    opportunities = db.relationship(
+        "Opportunity",
+        back_populates="campaign",
+        cascade="all, delete-orphan",
+        order_by="Opportunity.discovered_at.desc()",
+    )
+    scout_runs = db.relationship(
+        "ScoutRun",
+        back_populates="campaign",
+        cascade="all, delete-orphan",
+    )
+
+
+class Opportunity(db.Model):
+    __tablename__ = "opportunities"
+    __table_args__ = (
+        UniqueConstraint(
+            "campaign_id",
+            "source_url",
+            name="uq_opportunity_campaign_source_url",
+        ),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    campaign_id = db.Column(
+        db.Integer,
+        db.ForeignKey("campaigns.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    business_line = db.Column(db.String(30), nullable=False, index=True)
+    source_name = db.Column(db.String(50), nullable=False)
+    source_url = db.Column(db.String(1500), nullable=False)
+    search_query = db.Column(db.String(400), nullable=False)
+    title = db.Column(db.String(500), nullable=False)
+    description = db.Column(db.Text, nullable=True)
+    published_text = db.Column(db.String(100), nullable=True)
+    status = db.Column(db.String(30), nullable=False, default="new", index=True)
+    fit_score = db.Column(db.Integer, nullable=False, default=0)
+    fit_reason = db.Column(db.Text, nullable=True)
+    evidence = db.Column(db.JSON, nullable=True)
+    discovered_at = db.Column(
+        db.DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    last_seen_at = db.Column(
+        db.DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    created_at = db.Column(
+        db.DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=utcnow,
+        onupdate=utcnow,
+    )
+
+    campaign = db.relationship("Campaign", back_populates="opportunities")
+
+
+class ScoutRun(db.Model):
+    __tablename__ = "scout_runs"
+    __table_args__ = (
+        UniqueConstraint("campaign_id", "run_date", name="uq_scout_run_campaign_date"),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    campaign_id = db.Column(
+        db.Integer,
+        db.ForeignKey("campaigns.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    run_date = db.Column(db.Date, nullable=False)
+    status = db.Column(db.String(30), nullable=False, default="running", index=True)
+    query_count = db.Column(db.Integer, nullable=False, default=0)
+    discovered_count = db.Column(db.Integer, nullable=False, default=0)
+    refreshed_count = db.Column(db.Integer, nullable=False, default=0)
+    error = db.Column(db.Text, nullable=True)
+    started_at = db.Column(db.DateTime(timezone=True), nullable=False, default=utcnow)
+    finished_at = db.Column(db.DateTime(timezone=True), nullable=True)
+
+    campaign = db.relationship("Campaign", back_populates="scout_runs")
 
 
 class LandingPage(db.Model):

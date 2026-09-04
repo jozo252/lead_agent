@@ -9,6 +9,7 @@
             <span class="badge">{{ offer_types.get(campaign.offer_type, campaign.offer_type) }}</span>
             <span class="badge">{{ offer_stages.get(campaign.offer_stage, campaign.offer_stage) }}</span>
             {% if campaign.automation_enabled %}<span class="badge">AI automatizácia</span>{% endif %}
+            {% if campaign.scout_enabled %}<span class="badge">Lovec: {{ business_lines.get(campaign.business_line, campaign.business_line) }}</span>{% endif %}
             <span class="badge">{{ campaign.status }}</span>
         </div>
         <h2 class="page-title">{{ campaign.name }}</h2>
@@ -35,6 +36,66 @@
         <button class="btn btn-secondary" type="submit" {% if campaign.automation_enabled %}onclick="return this.form.status.value !== 'active' || confirm('Aktiváciou AI kampane schvaľuješ budúce denné dávky na externé odosielanie. Pokračovať?');"{% endif %}>Uložiť stav</button>
     </form>
 </section>
+
+<section class="card section-gap scout-panel">
+    <div>
+        <h3 class="card-title">Lovec zákaziek</h3>
+        <p class="muted small">Prehľadáva verejný web a ukladá nájdené príležitosti. Neposiela e-maily ani cenové ponuky.</p>
+        {% if campaign.last_scout_error %}<p class="flash flash-warning">{{ campaign.last_scout_error }}</p>{% endif %}
+        {% if campaign.last_scout_run_at %}<p class="muted small">Posledný beh: {{ campaign.last_scout_run_at }}</p>{% endif %}
+    </div>
+    {% if campaign.status == 'active' and campaign.scout_enabled %}
+        <form method="post" action="{{ url_for('campaigns.run_scout_now', campaign_id=campaign.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit">Spustiť dnešný lov</button>
+        </form>
+    {% endif %}
+</section>
+
+{% if campaign.status != 'active' %}
+<section class="card section-gap">
+    <h3 class="card-title">Nastavenie lovca</h3>
+    <form method="post" action="{{ url_for('campaigns.update_scout_settings', campaign_id=campaign.id) }}" class="scout-settings-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <div class="grid grid-2 equal-grid">
+            <label>Odbor
+                <select name="business_line">
+                    {% for value, label in business_lines.items() %}
+                        <option value="{{ value }}" {% if campaign.business_line == value %}selected{% endif %}>{{ label }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label class="checkbox-field">
+                <input type="checkbox" name="scout_enabled" {% if campaign.scout_enabled %}checked{% endif %}>
+                Zapnúť lovca
+            </label>
+        </div>
+        <label>Vyhľadávacie dotazy, jeden na riadok
+            <textarea name="scout_queries" rows="5" placeholder="dopyt elektroinštalácia Slovensko">{{ (campaign.scout_queries or [])|join('\n') }}</textarea>
+        </label>
+        <button class="btn btn-secondary" type="submit">Uložiť lovca</button>
+    </form>
+</section>
+{% endif %}
+
+{% if opportunities %}
+<section class="card section-gap">
+    <h3 class="card-title">Nájdené príležitosti</h3>
+    <div class="opportunity-list">
+        {% for opportunity in opportunities %}
+            <article class="opportunity-item">
+                <div>
+                    <a href="{{ opportunity.source_url }}" target="_blank" rel="noopener"><strong>{{ opportunity.title }}</strong></a>
+                    <p class="muted small">Zhoda {{ opportunity.fit_score }}/100 · {{ opportunity.fit_reason }}</p>
+                    {% if opportunity.description %}<p>{{ opportunity.description }}</p>{% endif %}
+                    <p class="muted small">{{ opportunity.source_name }} · nájdené {{ opportunity.discovered_at }}{% if opportunity.published_text %} · {{ opportunity.published_text }}{% endif %}</p>
+                </div>
+                <span class="badge status-{{ opportunity.status }}">{{ opportunity.status }}</span>
+            </article>
+        {% endfor %}
+    </div>
+</section>
+{% endif %}
 
 <section class="card section-gap landing-page-panel">
     <div>
@@ -232,13 +293,18 @@
 
 <style>
     .compact-actions { margin: 0 0 8px; }
-    .status-panel, .landing-page-panel, .automation-panel, .send-panel, .send-form, .outcome-form { display: flex; align-items: end; gap: 12px; justify-content: space-between; }
+    .status-panel, .landing-page-panel, .automation-panel, .scout-panel, .send-panel, .send-form, .outcome-form { display: flex; align-items: end; gap: 12px; justify-content: space-between; }
     .send-form input { width: 100px; }
     .selection-form { min-width: 230px; }
     .selection-form label { margin-top: 0; }
     .recipient-list { display: grid; gap: 18px; }
     .automation-settings-form { display: grid; gap: 12px; }
-    .automation-settings-form label { display: grid; gap: 6px; }
+    .automation-settings-form label, .scout-settings-form label { display: grid; gap: 6px; }
+    .scout-settings-form { display: grid; gap: 12px; }
+    .checkbox-field { display: flex !important; flex-direction: row; align-items: center; gap: 8px; }
+    .checkbox-field input { width: auto; }
+    .opportunity-list { display: grid; gap: 14px; }
+    .opportunity-item { display: flex; justify-content: space-between; gap: 16px; border-top: 1px solid var(--border); padding-top: 14px; }
     .equal-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .limits-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); }
     .recipient-form { display: grid; gap: 10px; }
@@ -250,6 +316,6 @@
     .status-failed, .status-bounced, .status-opted_out { border-color: #fca5a5; color: #b91c1c; }
     pre { white-space: pre-wrap; overflow-wrap: anywhere; }
     @media (max-width: 900px) { .limits-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-    @media (max-width: 720px) { .landing-page-panel, .automation-panel, .send-panel, .send-form, .outcome-form { align-items: stretch; flex-direction: column; } .equal-grid, .limits-grid { grid-template-columns: 1fr; } }
+    @media (max-width: 720px) { .landing-page-panel, .automation-panel, .scout-panel, .send-panel, .send-form, .outcome-form { align-items: stretch; flex-direction: column; } .equal-grid, .limits-grid { grid-template-columns: 1fr; } }
 </style>
 {% endblock %}

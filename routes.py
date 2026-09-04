@@ -815,12 +815,14 @@ def save_message(lead_id):
     lead = Lead.query.get_or_404(lead_id)
 
     message = request.form.get("suggested_message", "").strip()
+    subject = request.form.get("email_subject", "").strip()
 
     if not message:
         flash("Text správy nemôže byť prázdny.", "error")
         return redirect(url_for("main.home"))
 
     lead.suggested_message = message
+    lead.suggested_subject = subject[:255] or lead.suggested_subject
     db.session.commit()
 
     flash("Text oslovenia bol uložený.", "success")
@@ -855,6 +857,7 @@ def send_email(lead_id):
         mail.send(msg)
 
         lead.suggested_message = message_text
+        lead.suggested_subject = subject[:255]
         lead.status = "Oslovený"
         lead.last_contacted_at = datetime.utcnow()
 

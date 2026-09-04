@@ -36,6 +36,7 @@ from services.company_filtering import (
 from services.postal_locations import LocationLookupError
 from services.landing_pages import ensure_landing_page_link
 from services.opportunity_scout import run_campaign_scout, validate_scout_queries
+from services.opportunity_conversion import convert_verified_opportunity
 
 
 campaign_bp = Blueprint("campaigns", __name__, url_prefix="/campaigns")
@@ -337,6 +338,46 @@ def run_scout_now(campaign_id):
             "success",
         )
     return redirect(url_for("campaigns.campaign_detail", campaign_id=campaign.id))
+
+
+@campaign_bp.route(
+    "/<int:campaign_id>/opportunities/<int:opportunity_id>/convert",
+    methods=["POST"],
+)
+def convert_opportunity(campaign_id, opportunity_id):
+    opportunity = Opportunity.query.filter_by(
+        id=opportunity_id,
+        campaign_id=campaign_id,
+    ).first_or_404()
+    try:
+        lead, created = convert_verified_opportunity(
+            opportunity,
+            verification_confirmed=request.form.get("verification_confirmed") == "on",
+            company_name=request.form.get("company_name", ""),
+            verification_note=request.form.get("verification_note", ""),
+            contact_source_url=request.form.get("contact_source_url", ""),
+            email=request.form.get("email", ""),
+            phone=request.form.get("phone", ""),
+            website=request.form.get("website", ""),
+            city=request.form.get("city", ""),
+        )
+        if created:
+            db.session.commit()
+            flash(
+                "Overená príležitosť bola zmenená na CRM lead. "
+                "Koncept je uložený na kontrolu; nič nebolo odoslané.",
+                "success",
+            )
+        else:
+            flash("Táto príležitosť už má CRM lead.", "warning")
+        return redirect(url_for("main.lead_detail", lead_id=lead.id))
+    except ValueError as exc:
+        db.session.rollback()
+        flash(str(exc), "error")
+    except Exception as exc:
+        db.session.rollback()
+        flash(f"CRM lead sa nepodarilo vytvoriť: {exc}", "error")
+    return redirect(url_for("campaigns.campaign_detail", campaign_id=campaign_id))
 
 
 @campaign_bp.route("/<int:campaign_id>/status", methods=["POST"])

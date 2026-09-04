@@ -656,7 +656,7 @@
                                                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 
                                                 <label>Predmet emailu</label>
-                                                <input type="text" name="email_subject" value="Možnosť spolupráce">
+                                                <input type="text" name="email_subject" maxlength="255" value="{{ lead.suggested_subject or 'Možnosť spolupráce' }}">
 
                                                 <label>Text oslovenia</label>
                                                 <textarea name="suggested_message" style="min-height: 180px;">{{ lead.suggested_message }}</textarea>

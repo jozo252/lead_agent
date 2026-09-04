@@ -89,6 +89,28 @@
                     <p class="muted small">Zhoda {{ opportunity.fit_score }}/100 · {{ opportunity.fit_reason }}</p>
                     {% if opportunity.description %}<p>{{ opportunity.description }}</p>{% endif %}
                     <p class="muted small">{{ opportunity.source_name }} · nájdené {{ opportunity.discovered_at }}{% if opportunity.published_text %} · {{ opportunity.published_text }}{% endif %}</p>
+                    {% if opportunity.lead %}
+                        <p><a class="btn btn-secondary" href="{{ url_for('main.lead_detail', lead_id=opportunity.lead.id) }}">Otvoriť CRM lead</a></p>
+                    {% else %}
+                        <details class="opportunity-review">
+                            <summary>Ručne overiť a vytvoriť CRM lead</summary>
+                            <form method="post" action="{{ url_for('campaigns.convert_opportunity', campaign_id=campaign.id, opportunity_id=opportunity.id) }}" class="lead-form">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                <p class="muted small">Najprv otvor zdroj, over aktuálnosť dopytu a skontroluj, že kontakt patrí firme alebo zadávateľovi. Táto akcia iba uloží lead a koncept; nič neodošle.</p>
+                                <div class="grid grid-2 equal-grid">
+                                    <label>Názov firmy alebo zákazníka<input type="text" name="company_name" maxlength="200" required></label>
+                                    <label>Lokalita<input type="text" name="city" maxlength="100"></label>
+                                    <label>Overený e-mail<input type="email" name="email" maxlength="200"></label>
+                                    <label>Overený telefón<input type="text" name="phone" maxlength="100"></label>
+                                    <label>Web firmy<input type="url" name="website" maxlength="300" placeholder="https://..."></label>
+                                    <label>Zdroj kontaktu<input type="url" name="contact_source_url" maxlength="1500" value="{{ opportunity.source_url }}" required></label>
+                                </div>
+                                <label>Poznámka k overeniu<textarea name="verification_note" rows="3" maxlength="2000" placeholder="Čo a kedy bolo na zdroji overené" required></textarea></label>
+                                <label class="checkbox-field"><input type="checkbox" name="verification_confirmed" required> Potvrdzujem, že príležitosť je aktuálna a zadaný kontakt som ručne overil.</label>
+                                <button type="submit">Vytvoriť lead a uložiť koncept</button>
+                            </form>
+                        </details>
+                    {% endif %}
                 </div>
                 <span class="badge status-{{ opportunity.status }}">{{ opportunity.status }}</span>
             </article>
@@ -305,6 +327,7 @@
     .checkbox-field input { width: auto; }
     .opportunity-list { display: grid; gap: 14px; }
     .opportunity-item { display: flex; justify-content: space-between; gap: 16px; border-top: 1px solid var(--border); padding-top: 14px; }
+    .opportunity-review { margin-top: 12px; }.opportunity-review summary { cursor: pointer; font-weight: 700; }.opportunity-review form { margin-top: 12px; }
     .equal-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .limits-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); }
     .recipient-form { display: grid; gap: 10px; }

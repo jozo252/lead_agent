@@ -38,6 +38,7 @@ class Lead(db.Model):
 
     reason_to_contact = db.Column(db.Text)
     ai_summary = db.Column(db.Text)
+    suggested_subject = db.Column(db.String(255))
     suggested_message = db.Column(db.Text)
 
     last_contacted_at = db.Column(db.DateTime)
@@ -627,6 +628,13 @@ class Opportunity(db.Model):
         nullable=False,
         index=True,
     )
+    lead_id = db.Column(
+        db.Integer,
+        db.ForeignKey("lead.id", ondelete="SET NULL"),
+        nullable=True,
+        unique=True,
+        index=True,
+    )
     business_line = db.Column(db.String(30), nullable=False, index=True)
     source_name = db.Column(db.String(50), nullable=False)
     source_url = db.Column(db.String(1500), nullable=False)
@@ -638,6 +646,10 @@ class Opportunity(db.Model):
     fit_score = db.Column(db.Integer, nullable=False, default=0)
     fit_reason = db.Column(db.Text, nullable=True)
     evidence = db.Column(db.JSON, nullable=True)
+    verified_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    verification_note = db.Column(db.Text, nullable=True)
+    contact_source_url = db.Column(db.String(1500), nullable=True)
+    converted_at = db.Column(db.DateTime(timezone=True), nullable=True)
     discovered_at = db.Column(
         db.DateTime(timezone=True), nullable=False, default=utcnow
     )
@@ -655,6 +667,10 @@ class Opportunity(db.Model):
     )
 
     campaign = db.relationship("Campaign", back_populates="opportunities")
+    lead = db.relationship(
+        "Lead",
+        backref=db.backref("source_opportunity", uselist=False),
+    )
 
 
 class ScoutRun(db.Model):

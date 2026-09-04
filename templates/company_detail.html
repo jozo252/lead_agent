@@ -135,7 +135,7 @@
             </div>
             <label>
                 Predmet
-                <input type="text" name="subject" value="Možnosť spolupráce" required>
+                <input type="text" name="subject" value="{{ outreach_lead.suggested_subject if outreach_lead and outreach_lead.suggested_subject else 'Možnosť spolupráce' }}" required>
             </label>
             <label>
                 Text e-mailu

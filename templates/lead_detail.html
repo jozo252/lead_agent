@@ -43,7 +43,7 @@
             {% if lead.suggested_message %}
             <form method="post" class="lead-form">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                <label>Predmet<input type="text" name="email_subject" value="Možnosť spolupráce"></label>
+                <label>Predmet<input type="text" name="email_subject" maxlength="255" value="{{ lead.suggested_subject or 'Možnosť spolupráce' }}"></label>
                 <label>Text e-mailu<textarea name="suggested_message" rows="9">{{ lead.suggested_message }}</textarea></label>
                 <div class="actions">
                     <button type="submit" class="btn btn-secondary" formaction="{{ url_for('main.save_message', lead_id=lead.id) }}">Uložiť text</button>

@@ -213,6 +213,12 @@ iba číta verejné výsledky a zapisuje príležitosti. Nevytvára príjemcov, 
 správy a nevytvára cenu. Ďalší krok je ručné overenie zdroja a rozhodnutie, či sa
 má príležitosť zmeniť na lead.
 
+V detaile kampane sa dá nález rozbaliť a po manuálnom overení zmeniť na CRM
+lead. Povinné je potvrdenie aktuálnosti, zdroj kontaktu, poznámka k overeniu a
+aspoň jeden overený e-mail alebo telefón. Lead dostane iba editovateľný koncept
+z existujúcej šablóny kampane; táto akcia nič neposiela a nedopĺňa cenu ani
+identitu odosielateľa.
+
 ## Cenová brána
 
 Keď prijatá odpoveď vyžaduje cenu, otvor detail leadu a pri konkrétnej odpovedi

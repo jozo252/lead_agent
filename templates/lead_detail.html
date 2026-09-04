@@ -82,9 +82,33 @@
             {% for reply in email_replies %}
             <article class="reply-card"><strong>{{ reply.subject or "Bez predmetu" }}</strong><p class="muted small">Od: {{ reply.from_name or reply.from_email }} · {% if reply.received_at %}{{ reply.received_at.strftime('%d.%m.%Y %H:%M') }}{% endif %}</p><div class="content-panel">{{ reply.text_body or "Bez textu" }}</div>
                 <form method="post" action="{{ url_for('main.generate_reply', reply_id=reply.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button type="submit" class="btn btn-small btn-secondary">Vygenerovať odpoveď</button></form>
+                {% if not reply.quote_request %}<form method="post" action="{{ url_for('main.add_quote_request', lead_id=lead.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="reply_id" value="{{ reply.id }}"><button type="submit" class="btn btn-small btn-secondary">Zákazník žiada cenu</button></form>{% endif %}
                 {% if reply.ai_reply_draft %}<form method="post" action="{{ url_for('main.send_reply', reply_id=reply.id) }}" class="lead-form"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><label>Návrh odpovede<textarea name="reply_body" rows="7">{{ reply.ai_reply_draft }}</textarea></label><button type="submit" onclick="return confirm('Odoslať túto odpoveď?');">Odoslať odpoveď</button></form>{% endif %}
             </article>
             {% else %}<p class="muted">Zatiaľ neprišla žiadna odpoveď.</p>{% endfor %}
+        </section>
+
+        <section class="card section-gap"><h3 class="card-title">Cenové požiadavky</h3>
+            {% for quote in quote_requests %}
+            <article class="reply-card">
+                <div class="card-header"><strong>#{{ quote.id }} · {{ quote.recipient_email }}</strong><span class="badge">{{ quote.status }}</span></div>
+                {% if quote.request_text %}<div class="content-panel">{{ quote.request_text }}</div>{% endif %}
+                {% if quote.status in ['awaiting_price', 'ready'] %}
+                <form method="post" action="{{ url_for('main.price_and_send_quote', lead_id=lead.id, quote_request_id=quote.id) }}" class="lead-form">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <label>Cena<input type="number" name="amount" min="0.01" max="9999999999.99" step="0.01" value="{{ quote.amount or '' }}" required></label>
+                    <label>Mena<select name="currency">{% for currency in ['EUR', 'CZK', 'USD', 'GBP', 'CHF', 'PLN', 'HUF'] %}<option value="{{ currency }}" {% if quote.currency == currency %}selected{% endif %}>{{ currency }}</option>{% endfor %}</select></label>
+                    <label>Jednotka<input type="text" name="unit" maxlength="50" placeholder="hodina, m², projekt alebo celkom" value="{{ quote.unit or '' }}" required></label>
+                    <label>DPH<input type="text" name="vat_text" maxlength="100" placeholder="s DPH, bez DPH alebo nie som platca DPH" value="{{ quote.vat_text or '' }}" required></label>
+                    <label>Rozsah a podmienky<textarea name="terms" rows="4" maxlength="4000">{{ quote.terms or '' }}</textarea></label>
+                    <label>Platnosť v dňoch<input type="number" name="validity_days" min="1" max="90" value="{{ quote.validity_days or 14 }}" required></label>
+                    <label>Podpis odosielateľa<input type="text" name="sender_signature" maxlength="255" placeholder="Meno alebo potvrdená firemná identita" value="{{ quote.sender_signature or '' }}" required></label>
+                    <button type="submit" name="action" value="send" onclick="return confirm('Uložiť túto cenu a odoslať ponuku na {{ quote.recipient_email }}?');">Uložiť cenu a odoslať</button>
+                </form>
+                {% elif quote.status == 'sent' %}<p class="muted small">Odoslané {{ quote.sent_at.strftime('%d.%m.%Y %H:%M') if quote.sent_at else '' }}.</p>
+                {% elif quote.last_error %}<p class="muted small">{{ quote.last_error }}</p>{% endif %}
+            </article>
+            {% else %}<p class="muted">Zatiaľ žiadna odpoveď nečaká na cenu.</p>{% endfor %}
         </section>
 
         <section class="card section-gap"><h3 class="card-title">Pridať aktivitu</h3><form method="post" action="{{ url_for('main.add_activity', lead_id=lead.id) }}" class="lead-form"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><label>Typ<select name="activity_type">{% for activity_type in activity_types %}<option value="{{ activity_type }}">{{ activity_type }}</option>{% endfor %}</select></label><label>Poznámka<textarea name="note" rows="4"></textarea></label><button type="submit" class="btn btn-secondary">Pridať aktivitu</button></form></section>

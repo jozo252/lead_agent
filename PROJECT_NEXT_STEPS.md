@@ -193,6 +193,23 @@ cooldown, denný limit a celkový cieľ. Prepínač `--force` je iba na vedomé
 opakovanie dávky; limity zostávajú aktívne. Scheduler ani živá kampaň sa pri
 lokálnej implementácii automaticky nezapínajú.
 
+## Cenová brána
+
+Keď prijatá odpoveď vyžaduje cenu, otvor detail leadu a pri konkrétnej odpovedi
+klikni `Zákazník žiada cenu`. Vznikne iba jedna požiadavka v stave
+`awaiting_price`. V časti `Cenové požiadavky` doplň cenu, menu, jednotku, údaj
+o DPH, rozsah, platnosť a potvrdený podpis odosielateľa.
+
+Tlačidlo `Uložiť cenu a odoslať` je zároveň výslovným oprávnením pre túto jednu
+ponuku. Požiadavka sa pred SMTP volaním atomicky presunie do stavu `sending`,
+preto ju dva súbežné procesy neodošlú dvakrát. Ak výsledok SMTP alebo následného
+zápisu nemožno potvrdiť, stav je `unknown` a pred ďalšou akciou treba skontrolovať
+odoslanú poštu. Cena ani podpis sa nedopočítavajú cez AI.
+
+Rozpoznanie požiadavky na cenu je zatiaľ manuálne. Automatickú klasifikáciu
+odpovedí možno pridať až nad týmto deterministickým stavovým tokom; nejasná
+klasifikácia musí zostať na manuálnu kontrolu.
+
 ## Landing page ku kampani
 
 Každá kampaň môže mať jednu jednoduchú verejnú landing page:

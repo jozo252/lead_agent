@@ -10,6 +10,7 @@ from models import (
     Lead,
     LeadActivity,
     OutboundEmail,
+    QuoteRequest,
 )
 from extensions import db, mail
 from ai_service import generate_lead_message, analyze_lead
@@ -30,6 +31,7 @@ from services.campaigns import (
     mark_campaign_recipient_replied,
 )
 from services.postal_locations import LocationLookupError
+from services.quote_requests import create_quote_request, submit_price_and_send
 from email.utils import parseaddr
 from sqlalchemy import false, func, or_
 
@@ -973,6 +975,10 @@ def lead_detail(lead_id):
     email_replies = EmailReply.query.filter_by(lead_id=lead.id)\
         .order_by(EmailReply.created_at.desc())\
         .all()
+
+    quote_requests = QuoteRequest.query.filter_by(lead_id=lead.id)\
+        .order_by(QuoteRequest.created_at.desc())\
+        .all()
     
     return render_template(
         "lead_detail.html",
@@ -982,8 +988,65 @@ def lead_detail(lead_id):
         work_types=WORK_TYPES,
         company_segments=COMPANY_SEGMENTS,
         lead_statuses=LEAD_STATUSES,
-        email_replies=email_replies
+        email_replies=email_replies,
+        quote_requests=quote_requests,
     )
+
+
+@main_bp.route("/lead/<int:lead_id>/quote-request", methods=["POST"])
+def add_quote_request(lead_id):
+    lead = Lead.query.get_or_404(lead_id)
+    reply_id = request.form.get("reply_id", type=int)
+    email_reply = EmailReply.query.filter_by(id=reply_id, lead_id=lead.id).first()
+    if email_reply is None:
+        flash("Vyber platnú odpoveď zákazníka.", "error")
+        return redirect(url_for("main.lead_detail", lead_id=lead.id))
+
+    try:
+        _, created = create_quote_request(lead, email_reply)
+        flash(
+            "Požiadavka čaká na cenu."
+            if created
+            else "Táto odpoveď už má požiadavku na cenu.",
+            "success" if created else "warning",
+        )
+    except ValueError as exc:
+        db.session.rollback()
+        flash(str(exc), "error")
+    return redirect(url_for("main.lead_detail", lead_id=lead.id))
+
+
+@main_bp.route(
+    "/lead/<int:lead_id>/quote-request/<int:quote_request_id>/send",
+    methods=["POST"],
+)
+def price_and_send_quote(lead_id, quote_request_id):
+    quote_request = QuoteRequest.query.filter_by(
+        id=quote_request_id,
+        lead_id=lead_id,
+    ).first_or_404()
+    try:
+        submit_price_and_send(
+            quote_request,
+            amount=request.form.get("amount", ""),
+            currency=request.form.get("currency", "EUR"),
+            unit=request.form.get("unit", ""),
+            vat_text=request.form.get("vat_text", ""),
+            terms=request.form.get("terms", ""),
+            validity_days=request.form.get("validity_days", "14"),
+            sender_signature=request.form.get("sender_signature", ""),
+            authorized=request.form.get("action") == "send",
+        )
+        flash("Cenová ponuka bola odoslaná.", "success")
+    except (PermissionError, ValueError) as exc:
+        db.session.rollback()
+        flash(str(exc), "error")
+    except Exception:
+        flash(
+            "Odoslanie nemá potvrdený výsledok. Pred ďalšou akciou skontroluj poštu.",
+            "error",
+        )
+    return redirect(url_for("main.lead_detail", lead_id=lead_id))
 
 
 @main_bp.route("/lead/<int:lead_id>/analyze", methods=["POST"])

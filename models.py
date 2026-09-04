@@ -127,6 +127,63 @@ class OutboundEmail(db.Model):
     )
 
 
+class QuoteRequest(db.Model):
+    __tablename__ = "quote_requests"
+
+    id = db.Column(db.Integer, primary_key=True)
+    lead_id = db.Column(
+        db.Integer,
+        db.ForeignKey("lead.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    email_reply_id = db.Column(
+        db.Integer,
+        db.ForeignKey("email_reply.id", ondelete="SET NULL"),
+        nullable=True,
+        unique=True,
+    )
+    outbound_email_id = db.Column(
+        db.Integer,
+        db.ForeignKey("outbound_emails.id", ondelete="SET NULL"),
+        nullable=True,
+        unique=True,
+    )
+    recipient_email = db.Column(db.String(255), nullable=False)
+    request_text = db.Column(db.Text, nullable=True)
+    status = db.Column(
+        db.String(30), nullable=False, default="awaiting_price", index=True
+    )
+    amount = db.Column(db.Numeric(12, 2), nullable=True)
+    currency = db.Column(db.String(3), nullable=True)
+    unit = db.Column(db.String(50), nullable=True)
+    vat_text = db.Column(db.String(100), nullable=True)
+    terms = db.Column(db.Text, nullable=True)
+    validity_days = db.Column(db.Integer, nullable=True)
+    sender_signature = db.Column(db.String(255), nullable=True)
+    subject = db.Column(db.String(255), nullable=True)
+    body = db.Column(db.Text, nullable=True)
+    approval_token = db.Column(db.String(64), nullable=True, unique=True)
+    approved_at = db.Column(db.DateTime, nullable=True)
+    sending_started_at = db.Column(db.DateTime, nullable=True)
+    sent_at = db.Column(db.DateTime, nullable=True)
+    last_error = db.Column(db.Text, nullable=True)
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = db.Column(
+        db.DateTime,
+        nullable=False,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+    )
+
+    lead = db.relationship("Lead", backref="quote_requests")
+    email_reply = db.relationship(
+        "EmailReply",
+        backref=db.backref("quote_request", uselist=False),
+    )
+    outbound_email = db.relationship("OutboundEmail")
+
+
 
 class Company(db.Model):
     __tablename__ = "companies"

@@ -37,6 +37,8 @@ from services.postal_locations import LocationLookupError
 from services.landing_pages import ensure_landing_page_link
 from services.opportunity_scout import run_campaign_scout, validate_scout_queries
 from services.opportunity_conversion import convert_verified_opportunity
+from services.crm import get_or_create_company_lead
+from services.hubspot import HubSpotError, sync_lead_to_hubspot
 
 
 campaign_bp = Blueprint("campaigns", __name__, url_prefix="/campaigns")
@@ -806,6 +808,33 @@ def send_approved_recipients(campaign_id):
         "success" if result["sent"] else "warning",
     )
     return redirect(url_for("campaigns.campaign_detail", campaign_id=campaign.id))
+
+
+@campaign_bp.route(
+    "/<int:campaign_id>/recipients/<int:recipient_id>/sync-hubspot",
+    methods=["POST"],
+)
+def sync_recipient_hubspot(campaign_id, recipient_id):
+    """Vytvorí alebo aktualizuje HubSpot až po potvrdení používateľa."""
+    recipient = CampaignRecipient.query.filter_by(
+        id=recipient_id,
+        campaign_id=campaign_id,
+    ).first_or_404()
+    try:
+        lead = get_or_create_company_lead(
+            recipient.company,
+            recipient.recipient_email,
+            recipient.campaign.offer_type,
+        )
+        db.session.flush()
+        sync_lead_to_hubspot(lead)
+        db.session.commit()
+        flash("Firma a kontakt boli synchronizované do HubSpotu.", "success")
+    except HubSpotError as exc:
+        db.session.rollback()
+        flash(f"HubSpot synchronizácia zlyhala: {exc}", "error")
+
+    return redirect(url_for("campaigns.campaign_detail", campaign_id=campaign_id))
 
 
 @campaign_bp.route("/<int:campaign_id>/run-automation", methods=["POST"])

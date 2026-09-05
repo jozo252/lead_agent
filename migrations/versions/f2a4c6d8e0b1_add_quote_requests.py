@@ -1,7 +1,7 @@
 """add quote requests
 
 Revision ID: f2a4c6d8e0b1
-Revises: d1c0a4e5f6b7
+Revises: f91b6a2c7d10
 Create Date: 2026-09-04 00:00:00
 
 """
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 
 
 revision = "f2a4c6d8e0b1"
-down_revision = "d1c0a4e5f6b7"
+down_revision = "f91b6a2c7d10"
 branch_labels = None
 depends_on = None
 

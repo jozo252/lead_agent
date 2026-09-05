@@ -15,6 +15,7 @@ class Lead(db.Model):
         unique=True,
         nullable=True,
     )
+    company = db.relationship("Company", backref=db.backref("lead", uselist=False))
 
     company_name = db.Column(db.String(200), nullable=False)
     website = db.Column(db.String(300))
@@ -40,6 +41,10 @@ class Lead(db.Model):
     ai_summary = db.Column(db.Text)
     suggested_subject = db.Column(db.String(255))
     suggested_message = db.Column(db.Text)
+
+    hubspot_contact_id = db.Column(db.String(100), nullable=True, index=True)
+    hubspot_company_id = db.Column(db.String(100), nullable=True, index=True)
+    hubspot_synced_at = db.Column(db.DateTime(timezone=True), nullable=True)
 
     last_contacted_at = db.Column(db.DateTime)
     next_follow_up_at = db.Column(db.DateTime)

@@ -62,6 +62,7 @@ def create_app(config=None):
     app.config["MAIL_SERVER"] = os.environ.get("MAIL_SERVER")
     app.config["MAIL_PORT"] = int(os.environ.get("MAIL_PORT", 587))
     app.config["MAIL_USE_TLS"] = os.environ.get("MAIL_USE_TLS", "true").lower() == "true"
+    app.config["MAIL_USE_SSL"] = os.environ.get("MAIL_USE_SSL", "false").lower() == "true"
     app.config["MAIL_USERNAME"] = os.environ.get("MAIL_USERNAME")
     app.config["MAIL_PASSWORD"] = os.environ.get("MAIL_PASSWORD")
     app.config["MAIL_DEFAULT_SENDER"] = os.environ.get("MAIL_DEFAULT_SENDER")
@@ -72,6 +73,12 @@ def create_app(config=None):
     app.config["BRAVE_API_KEY"] = os.environ.get("BRAVE_API_KEY")
     app.config["OPENAI_API_KEY"] = os.environ.get("OPENAI_API_KEY")
     app.config["OPENAI_MODEL"] = os.environ.get("OPENAI_MODEL", "gpt-4.1-mini")
+    app.config["WORK_API_TOKEN"] = os.environ.get("WORK_API_TOKEN")
+    app.config["HUBSPOT_ACCESS_TOKEN"] = os.environ.get("HUBSPOT_ACCESS_TOKEN")
+    app.config["HUBSPOT_API_BASE"] = os.environ.get(
+        "HUBSPOT_API_BASE",
+        "https://api.hubapi.com",
+    ).rstrip("/")
     app.config["PUBLIC_BASE_URL"] = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
     app.config["LANDING_OPERATOR_NAME"] = os.environ.get("LANDING_OPERATOR_NAME")
     app.config["LANDING_OPERATOR_ADDRESS"] = os.environ.get(
@@ -106,6 +113,8 @@ def create_app(config=None):
     app.register_blueprint(campaign_bp)
     from landing_page_routes import landing_page_bp
     app.register_blueprint(landing_page_bp)
+    from integration_routes import integration_bp
+    app.register_blueprint(integration_bp)
 
     import models  # noqa: F401
 

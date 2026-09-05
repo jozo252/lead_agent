@@ -303,6 +303,10 @@
                     <button class="btn btn-secondary" type="submit">Uložiť výsledok</button>
                 </form>
             {% endif %}
+            <form method="post" action="{{ url_for('campaigns.sync_recipient_hubspot', campaign_id=campaign.id, recipient_id=recipient.id) }}" class="form-actions">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button class="btn btn-secondary" type="submit" onclick="return confirm('Synchronizovať túto firmu a kontakt do HubSpotu?');">Synchronizovať do HubSpotu</button>
+            </form>
         </article>
     {% else %}
         <article class="card">

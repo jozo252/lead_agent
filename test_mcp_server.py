@@ -1,6 +1,7 @@
 import asyncio
 import os
 import sys
+import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -121,21 +122,54 @@ class McpServerTests(unittest.TestCase):
         self.assertEqual(call_result.structured_content["count"], 1)
 
     def test_stdio_client_completes_handshake_and_lists_tools(self):
-        async def list_tool_names():
-            parameters = StdioServerParameters(
-                command=sys.executable,
-                args=["mcp_server.py"],
-                cwd=Path(__file__).resolve().parent,
-                env={**os.environ, "DATABASE_URL": "sqlite://"},
-            )
-            async with stdio_client(parameters) as (read_stream, write_stream):
-                async with ClientSession(read_stream, write_stream) as session:
-                    await session.initialize()
-                    result = await session.list_tools()
-                    return {tool.name for tool in result.tools}
+        async def inspect_server():
+            with tempfile.TemporaryDirectory() as temporary_directory:
+                database_path = Path(temporary_directory) / "mcp-test.db"
+                database_url = f"sqlite:///{database_path.as_posix()}"
+                schema_app = mcp_server._create_database_app(database_url)
+                try:
+                    with schema_app.app_context():
+                        db.create_all()
+                    child_environment = {
+                        key: os.environ[key]
+                        for key in (
+                            "COMSPEC",
+                            "PATH",
+                            "PATHEXT",
+                            "SYSTEMROOT",
+                            "TEMP",
+                            "TMP",
+                            "WINDIR",
+                        )
+                        if key in os.environ
+                    }
+                    child_environment[mcp_server.MCP_DATABASE_URL_ENV] = database_url
+                    parameters = StdioServerParameters(
+                        command=sys.executable,
+                        args=["mcp_server.py"],
+                        cwd=Path(__file__).resolve().parent,
+                        env=child_environment,
+                    )
+                    async with stdio_client(parameters) as (read_stream, write_stream):
+                        async with ClientSession(read_stream, write_stream) as session:
+                            await session.initialize()
+                            tools_result = await session.list_tools()
+                            metrics_result = await session.call_tool(
+                                "campaign_metrics",
+                                {},
+                            )
+                            return (
+                                {tool.name for tool in tools_result.tools},
+                                metrics_result,
+                            )
+                finally:
+                    with schema_app.app_context():
+                        db.session.remove()
+                        db.engine.dispose()
 
+        tool_names, metrics_result = asyncio.run(inspect_server())
         self.assertEqual(
-            asyncio.run(list_tool_names()),
+            tool_names,
             {
                 "list_new_opportunities",
                 "convert_verified_opportunity",
@@ -145,6 +179,34 @@ class McpServerTests(unittest.TestCase):
                 "pause_campaign",
             },
         )
+        self.assertFalse(metrics_result.is_error)
+        self.assertEqual(
+            metrics_result.structured_content,
+            {"count": 0, "campaigns": []},
+        )
+
+    def test_database_resolution_rejects_missing_sqlite_file(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            missing_path = Path(temporary_directory) / "missing.db"
+            database_url = f"sqlite:///{missing_path.as_posix()}"
+            previous_value = os.environ.get(mcp_server.MCP_DATABASE_URL_ENV)
+            os.environ[mcp_server.MCP_DATABASE_URL_ENV] = database_url
+            try:
+                with self.assertRaisesRegex(RuntimeError, "databáza neexistuje"):
+                    mcp_server._resolve_database_uri()
+            finally:
+                if previous_value is None:
+                    os.environ.pop(mcp_server.MCP_DATABASE_URL_ENV, None)
+                else:
+                    os.environ[mcp_server.MCP_DATABASE_URL_ENV] = previous_value
+
+    def test_schema_validation_rejects_unmigrated_database(self):
+        empty_app = mcp_server._create_database_app("sqlite://")
+
+        with self.assertRaisesRegex(RuntimeError, "chýba tabuľka campaigns"):
+            mcp_server.validate_database_schema(empty_app)
+
+        mcp_server.validate_database_schema(self.app)
 
     def test_conversion_requires_confirmation_and_never_sends_email(self):
         with self.assertRaises(ToolError):

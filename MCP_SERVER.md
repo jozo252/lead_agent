@@ -21,20 +21,24 @@ doplnenie či odoslanie ceny. Prevod vytvorí len koncept na kontrolu.
 
 ## Lokálne spustenie
 
-1. Nainštaluj závislosti rovnakým Pythonom, ktorým sa spúšťa aplikácia:
+1. Vytvor oddelené prostredie a nainštaluj závislosti:
 
    ```powershell
-   python -m pip install -r requirements.txt
+   python -m venv .venv
+   .\.venv\Scripts\python.exe -m pip install -r requirements.txt
    ```
 
-2. Uisti sa, že `DATABASE_URL` ukazuje na správnu databázu, alebo že projektový
-   `.env` obsahuje rovnakú hodnotu ako Flask aplikácia. Server sám migrácie
+2. Server predvolene použije iba `instance/leads.db` vedľa `mcp_server.py` a
+   odmietne štart, ak súbor neexistuje alebo nemá požadovanú schému. Na test
+   kópie možno nastaviť `LEAD_AGENT_MCP_DATABASE_URL`; SQLite adresa musí
+   obsahovať absolútnu cestu k existujúcemu súboru. MCP zámerne nenačítava
+   projektový `.env` ani ostatné aplikačné tajomstvá. Server sám migrácie
    nespúšťa.
 
 3. Samostatný diagnostický štart:
 
    ```powershell
-   python mcp_server.py
+   .\.venv\Scripts\python.exe mcp_server.py
    ```
 
    STDIO server pri správnom štarte čaká na MCP klienta a nevypisuje bežné
@@ -47,8 +51,8 @@ nástroje majú režim schválenia `writes`.
 ## Overenie
 
 ```powershell
-python -m unittest test_mcp_server.py
-python -m unittest discover
+.\.venv\Scripts\python.exe -m unittest test_mcp_server.py
+.\.venv\Scripts\python.exe -m unittest discover
 ```
 
 Bezpečnostný test overuje aj to, že konverzia nevytvorí žiadny záznam v

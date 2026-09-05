@@ -1,8 +1,8 @@
 [mcp_servers.lead_agent]
-command = "python"
+command = ".venv/Scripts/python.exe"
 args = ["mcp_server.py"]
 cwd = "."
-env_vars = ["DATABASE_URL"]
+env_vars = ["LEAD_AGENT_MCP_DATABASE_URL"]
 enabled = true
 required = false
 enabled_tools = [

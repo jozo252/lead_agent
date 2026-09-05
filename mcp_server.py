@@ -1,21 +1,25 @@
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 from decimal import Decimal
+from pathlib import Path
 from typing import Annotated, Literal
 
+from flask import Flask
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel, Field
-from sqlalchemy import func
+from sqlalchemy import func, inspect
+from sqlalchemy.engine import make_url
 
-from app import app as flask_app
 from extensions import db
 from models import (
     Campaign,
     CampaignRecipient,
     Lead,
+    LeadActivity,
     Opportunity,
     QuoteRequest,
 )
@@ -48,6 +52,21 @@ QuoteStatus = Literal[
     "suppressed",
 ]
 NEW_LEAD_STATUSES = ("Nový", "Skontrolovať", "Osloviť")
+PROJECT_ROOT = Path(__file__).resolve().parent
+DEFAULT_DATABASE_PATH = PROJECT_ROOT / "instance" / "leads.db"
+MCP_DATABASE_URL_ENV = "LEAD_AGENT_MCP_DATABASE_URL"
+MCP_MODELS = (
+    Campaign,
+    CampaignRecipient,
+    Lead,
+    LeadActivity,
+    Opportunity,
+    QuoteRequest,
+)
+REQUIRED_SCHEMA = {
+    model.__table__.name: {column.name for column in model.__table__.columns}
+    for model in MCP_MODELS
+}
 
 
 class OpportunityItem(BaseModel):
@@ -175,6 +194,88 @@ server = MCPServer(
 )
 
 
+flask_app: Flask | None = None
+
+
+def _validate_sqlite_database_url(database_url: str) -> None:
+    parsed = make_url(database_url)
+    if parsed.get_backend_name() != "sqlite":
+        return
+    database = parsed.database
+    if database in (None, "", ":memory:"):
+        return
+    database_path = Path(database)
+    if not database_path.is_absolute():
+        raise RuntimeError(
+            f"{MCP_DATABASE_URL_ENV} musí pre SQLite obsahovať absolútnu cestu."
+        )
+    if not database_path.is_file():
+        raise RuntimeError(
+            f"MCP databáza neexistuje: {database_path}. "
+            f"Skontroluj {MCP_DATABASE_URL_ENV}."
+        )
+
+
+def _resolve_database_uri() -> str:
+    configured = str(os.environ.get(MCP_DATABASE_URL_ENV) or "").strip()
+    if configured:
+        _validate_sqlite_database_url(configured)
+        return configured
+    if not DEFAULT_DATABASE_PATH.is_file():
+        raise RuntimeError(
+            f"MCP databáza neexistuje: {DEFAULT_DATABASE_PATH}. "
+            f"Nastav {MCP_DATABASE_URL_ENV} na explicitnú databázu."
+        )
+    return f"sqlite:///{DEFAULT_DATABASE_PATH.as_posix()}"
+
+
+def _create_database_app(database_uri: str | None = None) -> Flask:
+    app = Flask(
+        "lead_agent_mcp",
+        instance_path=str(PROJECT_ROOT / "instance"),
+    )
+    app.config.update(
+        SQLALCHEMY_DATABASE_URI=database_uri or _resolve_database_uri(),
+        SQLALCHEMY_TRACK_MODIFICATIONS=False,
+    )
+    db.init_app(app)
+    return app
+
+
+def _get_flask_app() -> Flask:
+    global flask_app
+    if flask_app is None:
+        flask_app = _create_database_app()
+    return flask_app
+
+
+def validate_database_schema(app: Flask | None = None) -> None:
+    checked_app = app or _get_flask_app()
+    with checked_app.app_context():
+        database_inspector = inspect(db.engine)
+        available_tables = set(database_inspector.get_table_names())
+        problems = []
+        for table_name, required_columns in REQUIRED_SCHEMA.items():
+            if table_name not in available_tables:
+                problems.append(f"chýba tabuľka {table_name}")
+                continue
+            available_columns = {
+                column["name"]
+                for column in database_inspector.get_columns(table_name)
+            }
+            missing_columns = sorted(required_columns - available_columns)
+            if missing_columns:
+                problems.append(
+                    f"{table_name} nemá stĺpce {', '.join(missing_columns)}"
+                )
+        if problems:
+            raise RuntimeError(
+                "MCP databáza nemá požadovanú migračnú schému: "
+                + "; ".join(problems)
+                + ". Najprv bezpečne spusti Flask-Migrate upgrade."
+            )
+
+
 def _iso(value: datetime | None) -> str | None:
     if value is None:
         return None
@@ -205,7 +306,7 @@ def list_new_opportunities(
     campaign_id: int | None = None,
     limit: Limit = 20,
 ) -> OpportunityListResult:
-    with flask_app.app_context():
+    with _get_flask_app().app_context():
         query = Opportunity.query.filter_by(status="new")
         if campaign_id is not None:
             query = query.filter(Opportunity.campaign_id == campaign_id)
@@ -255,7 +356,7 @@ def convert_verified_opportunity(
     website: str | None = None,
     city: str | None = None,
 ) -> OpportunityConversionResult:
-    with flask_app.app_context():
+    with _get_flask_app().app_context():
         opportunity = db.session.get(Opportunity, opportunity_id)
         if opportunity is None:
             raise ToolError("Príležitosť neexistuje.")
@@ -306,7 +407,7 @@ def list_new_leads(
     status: LeadStatus | None = None,
     limit: Limit = 20,
 ) -> LeadListResult:
-    with flask_app.app_context():
+    with _get_flask_app().app_context():
         query = Lead.query
         if campaign_id is not None:
             query = query.join(
@@ -355,7 +456,7 @@ def list_quote_requests(
     status: QuoteStatus | None = "awaiting_price",
     limit: Limit = 20,
 ) -> QuoteRequestListResult:
-    with flask_app.app_context():
+    with _get_flask_app().app_context():
         query = QuoteRequest.query
         if status is not None:
             query = query.filter(QuoteRequest.status == status)
@@ -392,7 +493,7 @@ def list_quote_requests(
     structured_output=True,
 )
 def campaign_metrics(campaign_id: int | None = None) -> CampaignMetricsResult:
-    with flask_app.app_context():
+    with _get_flask_app().app_context():
         query = Campaign.query
         if campaign_id is not None:
             query = query.filter(Campaign.id == campaign_id)
@@ -457,7 +558,7 @@ def pause_campaign(
     campaign_id: int,
     confirmation: bool,
 ) -> CampaignPauseResult:
-    with flask_app.app_context():
+    with _get_flask_app().app_context():
         campaign = db.session.get(Campaign, campaign_id)
         if campaign is None:
             raise ToolError("Kampaň neexistuje.")
@@ -486,4 +587,5 @@ def pause_campaign(
 
 
 if __name__ == "__main__":
+    validate_database_schema()
     server.run(transport="stdio")

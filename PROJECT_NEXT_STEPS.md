@@ -236,6 +236,14 @@ Rozpoznanie požiadavky na cenu je zatiaľ manuálne. Automatickú klasifikáciu
 odpovedí možno pridať až nad týmto deterministickým stavovým tokom; nejasná
 klasifikácia musí zostať na manuálnu kontrolu.
 
+## Lokálne MCP ovládanie
+
+Projekt obsahuje lokálny STDIO server `mcp_server.py` a projektovú konfiguráciu
+`.codex/config.toml`. Codex cezň môže čítať príležitosti, leady, cenové
+požiadavky a metriky, po potvrdení previesť overenú príležitosť na koncept leadu
+alebo pozastaviť aktívnu kampaň. MCP neposiela e-maily, neurčuje cenu a
+nepublikuje landing page. Spustenie a testovanie opisuje `MCP_SERVER.md`.
+
 ## Landing page ku kampani
 
 Každá kampaň môže mať jednu jednoduchú verejnú landing page:

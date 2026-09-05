@@ -38,7 +38,7 @@ Agent nesmie sám vymyslieť kvalifikáciu, kapacitu, referenciu, cenu ani práv
 
 ## Rozhodnutie
 
-Rozšíriť existujúci projekt `C:\Users\pc\Documents\cestakodovanim\lead_agent`. Nový MCP server zatiaľ netreba. Existujúci systém už obsahuje databázu firiem, výber kandidátov, overovanie kontaktov, kampane, denné limity, suppression zoznam, prijímanie odpovedí a bezpečné jednorazové odoslanie.
+Rozšíriť existujúci projekt `C:\Users\pc\Documents\cestakodovanim\lead_agent`. MCP je iba lokálna ovládacia vrstva nad existujúcimi službami; nevytvára druhý obchodný systém. Existujúce jadro už obsahuje databázu firiem, výber kandidátov, overovanie kontaktov, kampane, denné limity, suppression zoznam, prijímanie odpovedí a bezpečné jednorazové odoslanie.
 
 Jadro systému môže byť všeobecné, ale každý obchodný beh musí patriť do jedného samostatného profilu. Agent, ktorý v jednej kampani mieša stavebníctvo, elektro a softvér, by produkoval slabé leady, nepresné správy a nevyhodnotiteľné výsledky.
 
@@ -128,17 +128,22 @@ Požiadavka na cenu potrebuje: lead, pôvodnú odpoveď, cenu, menu, jednotku, D
 - Prvý návrh intervalu: pondelok až piatok o 08:30, najviac jedna dávka na každý aktívny profil denne.
 - Scheduler sa nezapne, kým nie je schválená konkrétna kampaň, testovacia správa a odosielateľ.
 
-## MCP až ako ovládacia vrstva
+## MCP ako lokálna ovládacia vrstva
 
-Ak bude treba ovládanie z Codexu, MCP môže neskôr vystaviť úzke nástroje:
+Lokálny STDIO MCP je implementovaný v `mcp_server.py` a projektovo zapojený cez
+`.codex/config.toml`. Sprístupňuje šesť úzkych nástrojov:
 
+- `list_new_opportunities`
+- `convert_verified_opportunity`
 - `list_new_leads`
 - `list_quote_requests`
-- `submit_price_and_send`
-- `pause_campaign`
 - `campaign_metrics`
+- `pause_campaign`
 
-MCP nemá samostatne prehľadávať web ani odosielať e-maily. To patrí do deterministických služieb existujúcej aplikácie; MCP je iba bezpečné rozhranie.
+MCP samostatne neprehľadáva web, neurčuje cenu a nič neodosiela. Nástroj
+`submit_price_and_send` nebol pridaný zámerne: cena, identita odosielateľa a
+finálne odoslanie zostávajú v existujúcom ručne schvaľovanom webovom procese.
+Presný návod je v `MCP_SERVER.md`.
 
 ## Produkčné brány
 
@@ -162,4 +167,5 @@ Aktuálne znenie § 116 zákona č. 452/2021 Z. z. umožňuje priamy marketing n
 5. Spustiť 30-firemný stavebný pilot s limitom 5 správ denne.
 6. Podľa výsledkov upraviť jadro a až potom aktivovať elektro profil.
 7. Softvérový profil aktivovať až po potvrdení jedného plateného problému a konkrétnej ponuky.
-8. MCP pridať až vtedy, keď bude potrebné ovládanie systému z viacerých klientov.
+8. MCP používať ako lokálne rozhranie pre Codex; produkčné odosielanie ponechať
+   v existujúcom ručne schvaľovanom toku.

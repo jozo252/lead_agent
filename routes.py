@@ -1590,7 +1590,15 @@ def sync_inbox():
             flash("Úplná kontrola profilu zlyhala; follow-upy zostávajú blokované.", "error")
         return redirect(url_for("main.inbox"))
     legacy_address = str(current_app.config.get("IMAP_USERNAME") or "").strip().casefold()
-    if legacy_address and SenderProfile.query.filter(func.lower(SenderProfile.sender_email) == legacy_address).first():
+    # Merely preparing an unused identity must not disable the existing inbox.
+    # Once a profile owns mail history, keep its account boundary even if disabled.
+    if legacy_address and SenderProfile.query.filter(
+        func.lower(func.trim(SenderProfile.sender_email)) == legacy_address,
+        or_(
+            OutboundEmail.query.filter(OutboundEmail.sender_profile_id == SenderProfile.id).exists(),
+            EmailReply.query.filter(EmailReply.sender_profile_id == SenderProfile.id).exists(),
+        ),
+    ).first():
         flash("Táto schránka má vlastný profil. Vyber ho pri synchronizácii, aby sa zachovala identita odpovedí.", "error")
         return redirect(url_for("main.inbox"))
     try:

@@ -296,7 +296,9 @@ class CampaignWorkflowIntegrationTests(unittest.TestCase):
         page = self.client.get(f"/campaigns/{self.campaign.id}").get_data(as_text=True)
         self.assertNotIn(f'action="/campaigns/{self.campaign.id}/recipients/{self.recipient.id}"', page)
 
-    def test_legacy_inbox_same_profile_mailbox_is_blocked_before_network(self):
+    def test_legacy_inbox_used_profile_mailbox_is_blocked_before_network(self):
+        self.setup_ready_recipient()
+        self.send_first()
         self.app.config["IMAP_USERNAME"] = "webs@example.test"
         with patch("routes.fetch_inbox_messages") as legacy:
             response = self.client.post("/inbox/sync")

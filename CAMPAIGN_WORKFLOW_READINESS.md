@@ -28,7 +28,7 @@ na iný checkout; samotný reštart nie je náhradou za nasadenie a migráciu.
 
 ## Čo bolo overené
 
-- `python -B -m unittest discover -p 'test_*.py' -q`: **219 testov, OK**.
+- `python -B -m unittest discover -p 'test_*.py' -q`: **222 testov, OK** (vrátane regresie prechodu zo starej schránky na profil).
 - Kompletný UI tok s reálnym kódom zostavenia e-mailu a `MAIL_SUPPRESS_SEND=True`:
   overenie firmy → schválenie → prvé oslovenie → jediný vláknovaný follow-up.
   SMTP/IMAP/externý HTTP boli v integračných testoch blokované/mokované.
@@ -112,6 +112,10 @@ inštanciu schedulera. Inštalácia balíka ani migrácia scheduler nevytváraj�
 - Jeden inbox na profil, SMTP/IMAP username rovnaký ako sender_email. Zdieľané relay
   účty/aliasy nie sú podporované. Automatické presúvanie odpovedí mimo Inboxu treba
   pred pilotom vypnúť; presunuté/zmazané správy táto kontrola nevidí.
+- Pripravený profil bez vlastnej e-mailovej histórie neblokuje starú globálnu
+  synchronizáciu rovnakej schránky. Po prvej profilovanej správe alebo odpovedi ju
+  blokuje aj vypnutý profil, aby sa nemiešali identity. Starú neoznačenú históriu
+  systém spätne nepriraďuje; jej prechod vyžaduje samostatné overenie pôvodnej schránky.
 - Každá kontrola načíta celé relevantné okno, najviac 1000 správ. Prekročenie limitu
   alebo poškodená správa zablokuje odosielanie. Žiadne tiché preskočenie zlyhaní.
 - Globálne unikátny Message-ID odpovede zatiaľ ostáva v pôvodnej schéme; tá istá

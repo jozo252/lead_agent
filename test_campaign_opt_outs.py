@@ -11,6 +11,7 @@ from models import (
     EmailReply,
     Lead,
     OutboundEmail,
+    SenderProfile,
     Suppression,
 )
 from services.campaigns import is_explicit_opt_out_reply
@@ -163,6 +164,68 @@ class CampaignOptOutTests(unittest.TestCase):
 
         self.assertEqual(self.recipient.status, "replied")
         self.assertEqual(Suppression.query.count(), 0)
+
+    @patch("routes.fetch_inbox_messages")
+    def test_unused_disabled_matching_profile_keeps_legacy_inbox_working(self, fetch):
+        self.app.config["IMAP_USERNAME"] = " Owner@Example.test "
+        db.session.add(SenderProfile(
+            name="Weby", config_key="WEBS", sender_email="owner@example.test",
+            enabled=False,
+        ))
+        db.session.commit()
+        fetch.return_value = [{
+            "from_email": self.lead.email, "from_name": "Opt-out Firma",
+            "subject": "Re: Test", "body": "Mám záujem.",
+            "message_id": "<unused-profile-reply@example.test>",
+            "received_at": datetime(2026, 8, 23, 10, 0),
+            "thread_message_ids": ["<outbound-optout@example.test>"],
+        }]
+
+        response = self.client.post("/inbox/sync")
+
+        self.assertEqual(response.status_code, 302)
+        fetch.assert_called_once_with()
+        reply = EmailReply.query.one()
+        self.assertIsNone(reply.sender_profile_id)
+        self.assertEqual(reply.campaign_recipient_id, self.recipient.id)
+        self.assertEqual(self.recipient.status, "replied")
+
+    @patch("routes.fetch_inbox_messages")
+    def test_used_disabled_matching_profile_blocks_legacy_inbox(self, fetch):
+        self.app.config["IMAP_USERNAME"] = "owner@example.test"
+        profile = SenderProfile(
+            name="Weby", config_key="WEBS", sender_email="owner@example.test",
+            enabled=False,
+        )
+        OutboundEmail.query.one().sender_profile = profile
+        db.session.add(profile)
+        db.session.commit()
+
+        response = self.client.post("/inbox/sync")
+
+        self.assertEqual(response.status_code, 302)
+        fetch.assert_not_called()
+        self.assertEqual(EmailReply.query.count(), 0)
+
+    @patch("routes.fetch_inbox_messages")
+    def test_matching_profile_with_reply_history_also_blocks_legacy_inbox(self, fetch):
+        self.app.config["IMAP_USERNAME"] = "owner@example.test"
+        profile = SenderProfile(
+            name="Weby", config_key="WEBS", sender_email="owner@example.test",
+            enabled=False,
+        )
+        db.session.add(EmailReply(
+            lead=self.lead, sender_profile=profile,
+            imap_message_id="<profile-owned-reply@example.test>",
+            from_email=self.lead.email,
+        ))
+        db.session.commit()
+
+        response = self.client.post("/inbox/sync")
+
+        self.assertEqual(response.status_code, 302)
+        fetch.assert_not_called()
+        self.assertEqual(EmailReply.query.count(), 1)
 
 
 if __name__ == "__main__":

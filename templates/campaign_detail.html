@@ -37,6 +37,8 @@
     </form>
 </section>
 
+{% include "campaign_workflow_panel.html" %}
+
 <section class="card section-gap scout-panel">
     <div>
         <h3 class="card-title">Lovec zákaziek</h3>
@@ -269,13 +271,23 @@
                 <div>
                     <h3 class="card-title"><a href="{{ url_for('main.company_detail', company_id=recipient.company.id) }}">{{ recipient.company.official_name }}</a></h3>
                     <p class="card-description">{{ recipient.recipient_email }} · {{ recipient.company.municipality or 'obec neznáma' }} · IČO {{ recipient.company.ico or '—' }}</p>
+                    {% if campaign.require_no_website %}
+                        {% set web = website_presence_summary(recipient.company) %}
+                        <p class="muted small">{{ web.label }} · {{ web.checked_at or 'bez kontroly' }}</p>
+                        <details><summary>Podklady overenia webu</summary>
+                            {% for query in web.searched_queries %}<p>{{ query }}</p>{% endfor %}
+                            {% for evidence in web.evidence %}<p>{{ evidence }}</p>{% endfor %}
+                        </details>
+                    {% endif %}
                     {% if recipient.fit_score is not none %}<p class="muted small">Zhoda {{ recipient.fit_score }}/100 · {{ recipient.fit_reason or 'bez odôvodnenia' }}</p>{% endif %}
                 </div>
                 <span class="badge status-{{ recipient.status }}">{{ recipient.status }}</span>
             </div>
             {% if recipient.last_error %}<p class="flash flash-warning">{{ recipient.last_error }}</p>{% endif %}
 
-            {% if not recipient.sent_at %}
+            {% if recipient.status in ['sending', 'unknown'] %}
+                <p class="flash flash-warning">Odosielanie prebieha alebo má neistý výsledok. Automatické opakovanie ani nové schválenie nie je povolené; over odoslanú poštu.</p>
+            {% elif not recipient.sent_at %}
                 <form method="post" action="{{ url_for('campaigns.update_recipient', campaign_id=campaign.id, recipient_id=recipient.id) }}" class="recipient-form">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                     <label>Predmet<input name="subject" maxlength="255" required value="{{ recipient.subject }}"></label>
@@ -286,11 +298,13 @@
                     </div>
                 </form>
             {% else %}
+                {% set sent_copy = recipient.outbound_emails|sort(attribute='id')|first %}
                 <details>
                     <summary>Zobraziť odoslaný e-mail</summary>
                     <div class="details-body">
-                        <strong>{{ recipient.subject }}</strong>
-                        <pre>{{ recipient.body }}</pre>
+                        {% if sent_copy and sent_copy.sender_profile %}<p>{{ sent_copy.sender_profile.name }} · {{ sent_copy.sender_profile.sender_email }}</p>{% endif %}
+                        <strong>{{ sent_copy.subject if sent_copy else recipient.subject }}</strong>
+                        <pre>{{ sent_copy.body if sent_copy else recipient.body }}</pre>
                     </div>
                 </details>
                 <form method="post" action="{{ url_for('campaigns.update_recipient_outcome', campaign_id=campaign.id, recipient_id=recipient.id) }}" class="outcome-form">

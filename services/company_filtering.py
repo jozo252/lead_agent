@@ -5,6 +5,7 @@ from sqlalchemy import false, or_
 from extensions import db
 from models import CampaignRecipient, Company, CompanyContact, Lead
 from services.postal_locations import nearby_postal_codes
+from services.website_presence import website_absence_filter
 
 
 FILTER_NAMES = (
@@ -108,6 +109,8 @@ def filtered_companies_query(filters):
         query = query.filter(
             ~Company.contacts.any(CompanyContact.contact_type == "website")
         )
+    elif filters["website"] == "checked_not_found":
+        query = query.filter(website_absence_filter())
 
     if filters["analyzed"] == "yes":
         query = query.filter(Company.website_analyzed_at.isnot(None))

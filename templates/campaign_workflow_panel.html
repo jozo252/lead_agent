@@ -1,0 +1,41 @@
+<section class="card section-gap">
+    <h3 class="card-title">Pripravenosť odosielania</h3>
+    <p>Odosielateľ: {% if campaign.sender_profile %}<strong>{{ campaign.sender_profile.name }}</strong> · {{ campaign.sender_profile.sender_email or 'adresa chýba' }}{% else %}Pôvodná globálna schránka (bez automatického follow-upu){% endif %} · <a href="{{ url_for('workflow.sender_profiles') }}">Spravovať tri profily</a></p>
+    {% for issue in workflow_issues %}<p class="flash flash-warning">{{ issue }}</p>{% else %}<p>Konfiguračné kontroly sú splnené. Doručiteľnosť a prístupy treba ešte overiť testom schránky; tento stav sám nič neposiela.</p>{% endfor %}
+    <p>Filter webu: {{ 'iba firmy s nedávnym výsledkom „web sa nenašiel“' if campaign.require_no_website else 'bez obmedzenia' }}. Follow-up: {{ 'jeden schválený, po ' ~ campaign.follow_up_days ~ ' dňoch' if campaign.follow_up_enabled else 'vypnutý' }}.</p>
+    <p class="muted small">Denný limit je spoločný pre prvé oslovenia aj pripomenutia. Pripomenutie vyžaduje čerstvú úplnú kontrolu odpovedí. Stav „unknown“ alebo „sending“ sa automaticky neopakuje. Scheduler musí byť spustený samostatne; nie je zapnutý uložením formulára.</p>
+    {% if campaign.status in ['draft', 'paused'] %}
+    <details><summary>Nastaviť schránku, overovanie webu a jedno pripomenutie</summary>
+        <form method="post" action="{{ url_for('workflow.save_workflow_settings', campaign_id=campaign.id) }}" class="lead-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <label>Konkrétna ponuka a región<textarea name="offer_description" maxlength="10000" required rows="3">{{ campaign.offer_description }}</textarea></label>
+            <label>Predmet prvého oslovenia<input name="subject_template" maxlength="255" required value="{{ campaign.subject_template }}"></label>
+            <label>Základný text prvého oslovenia<textarea name="body_template" maxlength="10000" required rows="5">{{ campaign.body_template }}</textarea></label>
+            <p class="muted small">Tieto texty platia pre nový výber firiem. Už pripravené koncepty príjemcov sa neprepisujú.</p>
+            <label>Profil odosielateľa<select name="sender_profile_id"><option value="">Pôvodná globálna schránka</option>{% for profile in sender_profiles %}<option value="{{ profile.id }}" {% if profile.id == campaign.sender_profile_id %}selected{% endif %}>{{ profile.name }} · {{ profile.sender_email or 'nenastavený' }}</option>{% endfor %}</select></label>
+            {% if campaign.sender_profile %}<p>Aktuálny podpis vybraného profilu:</p><pre>{{ campaign.sender_profile.signature or 'Podpis ešte nie je vyplnený.' }}</pre>{% endif %}
+            <label><input type="checkbox" style="width:auto" name="require_no_website" {% if campaign.require_no_website %}checked{% endif %}> Len firmy, pri ktorých sa web pri overení nenašiel (platnosť 30 dní)</label>
+            <label>Predmet pripomenutia<input name="follow_up_subject_template" maxlength="255" value="{{ campaign.follow_up_subject_template or '' }}" placeholder="Re: {company_name} – spolupráca"></label>
+            <label>Presný text pripomenutia<textarea name="follow_up_body_template" maxlength="10000" rows="6">{{ campaign.follow_up_body_template or '' }}</textarea></label>
+            <p class="muted small">Premenné: {company_name}, {municipality}, {ico}. Podpis profilu a možnosť odhlásenia sa doplnia. Text ani cenu follow-upu nevymýšľa AI.</p>
+            <label>Odstup v dňoch<input type="number" name="follow_up_days" min="1" max="90" value="{{ campaign.follow_up_days }}"></label>
+            <label><input type="checkbox" name="follow_up_enabled" style="width:auto" {% if campaign.follow_up_enabled %}checked{% endif %}> Povoliť jedno automatické pripomenutie novým príjemcom</label>
+            <label><input type="checkbox" name="follow_up_approved" style="width:auto"> Schvaľujem tento text a podpis zvoleného profilu na jedno pripomenutie bez odpovede</label>
+            <p class="muted small">Uloženie zruší staré čakajúce pripomenutia. Nevytvára ich spätne už osloveným firmám.</p>
+            <button type="submit">Uložiť nastavenie</button>
+        </form>
+    </details>
+    {% if campaign.require_no_website %}
+    <form method="post" action="{{ url_for('workflow.check_campaign_websites', campaign_id=campaign.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <p class="muted small">Použije uložené AI zacielenie. Najviac 5 firiem, každá najviac 3 dotazy Brave; spotrebuje API kredit. Nejasné výsledky sa nezaradia. Facebook/Bazoš profil sa nepovažuje za vlastný web.</p>
+        <button type="submit" class="btn btn-secondary">Overiť weby ďalších 5 kandidátov (Brave API)</button>
+    </form>
+    {% endif %}
+    {% endif %}
+    {% if followups %}
+    <details><summary>Front pripomenutí (najviac 100)</summary>
+        <div class="table-wrap"><table><thead><tr><th>Firma</th><th>Termín UTC</th><th>Stav</th><th>Poznámka</th></tr></thead><tbody>{% for item in followups %}<tr><td>{{ item.campaign_recipient.company.official_name }}</td><td>{{ item.due_at }}</td><td>{{ item.status }}</td><td>{{ item.last_error or '—' }}</td></tr>{% endfor %}</tbody></table></div>
+    </details>
+    {% endif %}
+</section>

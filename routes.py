@@ -1,9 +1,10 @@
 from datetime import datetime, date, timedelta
 from reply_generator import generate_reply_to_customer
 
-from flask import Blueprint, render_template, request, redirect, url_for, flash
+from flask import Blueprint, render_template, request, redirect, url_for, flash, current_app
 from models import (
     Campaign,
+    CampaignRecipient,
     Company,
     CompanyContact,
     EmailReply,
@@ -11,6 +12,8 @@ from models import (
     LeadActivity,
     OutboundEmail,
     QuoteRequest,
+    Suppression,
+    SenderProfile,
 )
 from extensions import db, mail
 from ai_service import generate_lead_message, analyze_lead
@@ -30,14 +33,43 @@ from services.hubspot import HubSpotError, sync_lead_to_hubspot
 from services.campaigns import (
     campaign_recipient_for_message_ids,
     mark_campaign_recipient_replied,
+    is_suppressed,
 )
 from services.postal_locations import LocationLookupError
 from services.quote_requests import create_quote_request, submit_price_and_send
+from services.sender_profiles import resolve_reply_sender_profile, send_profile_message
 from email.utils import parseaddr
-from sqlalchemy import false, func, or_
+from sqlalchemy import false, func, or_, and_
 
 
 main_bp = Blueprint("main", __name__)
+
+
+def _manual_send_blocker(company, address, lead=None):
+    """Legacy forms may not bypass a campaign account or an opt-out."""
+    normalized = (address or "").strip().casefold()
+    if company is not None and is_suppressed(company, normalized):
+        return "Príjemca je na suppression zozname; správa nebola odoslaná."
+    if Suppression.query.filter(or_(
+        and_(Suppression.scope == "email", Suppression.value == normalized),
+        and_(Suppression.scope == "domain", Suppression.value == normalized.rsplit("@", 1)[-1]),
+    )).first():
+        return "Príjemca je na suppression zozname; správa nebola odoslaná."
+    if company is not None and CampaignRecipient.query.join(Campaign).filter(
+        CampaignRecipient.company_id == company.id,
+        Campaign.sender_profile_id.isnot(None),
+    ).first():
+        return "Firma patrí do kampane s vlastným profilom. Odošli správu cez túto kampaň, nie cez globálnu schránku."
+    history = OutboundEmail.query.filter(OutboundEmail.sender_profile_id.isnot(None))
+    if lead is not None:
+        history = history.filter(OutboundEmail.lead_id == lead.id)
+    elif company is not None:
+        history = history.join(Lead).filter(Lead.company_id == company.id)
+    else:
+        return None
+    if history.first():
+        return "Kontakt má históriu vlastného profilu. Použi jeho kampaň alebo odpoveď v Inboxe; globálna schránka sa nepoužila."
+    return None
 
 
 WORK_TYPES = [
@@ -432,10 +464,12 @@ def analyze_filtered_company_websites():
 @main_bp.route("/companies/<int:company_id>")
 def company_detail(company_id):
     company = Company.query.get_or_404(company_id)
+    from services.website_presence import website_presence_summary
 
     return render_template(
         "company_detail.html",
         company=company,
+        website_presence=website_presence_summary(company),
         email_contacts=company_contacts_by_type(company, "email"),
         outreach_lead=Lead.query.filter_by(company_id=company.id).one_or_none(),
         outreach_industries=OUTREACH_INDUSTRIES,
@@ -556,6 +590,10 @@ def send_company_outreach(company_id):
     """Odošle prvé oslovenie z detailu firmy a založí CRM follow-up."""
     company = Company.query.get_or_404(company_id)
     email = request.form.get("email", "").strip().lower()
+    blocked = _manual_send_blocker(company, email)
+    if blocked:
+        flash(blocked, "error")
+        return redirect(url_for("main.company_detail", company_id=company.id))
     subject = request.form.get("subject", "").strip()
     message_text = request.form.get("message", "").strip()
     industry = request.form.get("industry", "").strip()
@@ -833,6 +871,10 @@ def save_message(lead_id):
 @main_bp.route("/lead/<int:lead_id>/send-email", methods=["POST"])
 def send_email(lead_id):
     lead = Lead.query.get_or_404(lead_id)
+    blocked = _manual_send_blocker(lead.company, lead.email, lead=lead)
+    if blocked:
+        flash(blocked, "error")
+        return redirect(url_for("main.lead_detail", lead_id=lead.id))
 
     message_text = request.form.get("suggested_message", "").strip()
     subject = request.form.get("email_subject", "").strip()
@@ -1367,6 +1409,17 @@ def send_reply(reply_id):
         flash("Odpoveď nie je priradená k leadu.", "error")
         return redirect(url_for("main.home"))
 
+    company = reply.lead.company
+    address = (reply.from_email or "").strip().casefold()
+    domain = address.rsplit("@", 1)[-1]
+    suppressed = is_suppressed(company, address) if company else Suppression.query.filter(
+        or_(and_(Suppression.scope == "email", Suppression.value == address),
+            and_(Suppression.scope == "domain", Suppression.value == domain)),
+    ).first()
+    if suppressed:
+        flash("Príjemca je na suppression zozname; odpoveď nebola odoslaná.", "error")
+        return redirect(url_for("main.lead_detail", lead_id=reply.lead.id))
+
     reply_body = request.form.get("reply_body")
 
     if not reply_body:
@@ -1386,32 +1439,36 @@ def send_reply(reply_id):
         extra_headers["References"] = inbound_message_id
 
     try:
+        sender_profile = resolve_reply_sender_profile(reply)
         message = Message(
             subject=subject,
             recipients=[reply.from_email],
             body=reply_body,
             extra_headers=extra_headers or None,
         )
-        mail.send(message)
+        send_profile_message(message, sender_profile)
 
-        reply.ai_reply_draft = reply_body
+        reply.ai_reply_draft = message.body
         reply.reply_sent_at = datetime.utcnow()
         reply.lead.status = "Odpovedané"
+        reply.lead.last_contacted_at = datetime.utcnow()
+        reply.lead.next_follow_up_at = None
         db.session.add(
             OutboundEmail(
                 lead=reply.lead,
                 campaign_recipient=reply.campaign_recipient,
+                sender_profile=sender_profile,
                 message_id=message.msgId,
                 recipient=reply.from_email,
                 subject=subject,
-                body=reply_body,
+                body=message.body,
             )
         )
         db.session.add(
             LeadActivity(
                 lead=reply.lead,
                 activity_type="Email odoslaný",
-                note=f"Odpoveď na: {subject}\n\n{reply_body}",
+                note=f"Odpoveď na: {subject}\n\n{message.body}",
             )
         )
         db.session.commit()
@@ -1511,12 +1568,31 @@ def inbox_detail(email_id):
         emails=emails,
         selected_email=selected_email,
         conversation_messages=conversation_messages,
+        sender_profiles=SenderProfile.query.order_by(SenderProfile.id).all(),
     )
 
 
 @main_bp.route("/inbox/sync", methods=["POST"])
 def sync_inbox():
     """Načíta posledné IMAP správy a uloží iba doteraz neznáme e-maily."""
+    profile_id = request.form.get("sender_profile_id", "").strip()
+    if profile_id:
+        if not profile_id.isdigit():
+            flash("Vyber platný profil schránky.", "error")
+            return redirect(url_for("main.inbox"))
+        from services.campaign_followups import sync_profile_inbox
+        profile = SenderProfile.query.get_or_404(int(profile_id))
+        try:
+            result = sync_profile_inbox(profile)
+            flash(f"Inbox {profile.name}: nové odpovede {result['imported']}; zrušené pripomenutia {result['cancelled']}.", "success")
+        except Exception:
+            db.session.rollback()
+            flash("Úplná kontrola profilu zlyhala; follow-upy zostávajú blokované.", "error")
+        return redirect(url_for("main.inbox"))
+    legacy_address = str(current_app.config.get("IMAP_USERNAME") or "").strip().casefold()
+    if legacy_address and SenderProfile.query.filter(func.lower(SenderProfile.sender_email) == legacy_address).first():
+        flash("Táto schránka má vlastný profil. Vyber ho pri synchronizácii, aby sa zachovala identita odpovedí.", "error")
+        return redirect(url_for("main.inbox"))
     try:
         messages = fetch_inbox_messages()
         imported_count = 0
@@ -1541,13 +1617,18 @@ def sync_inbox():
                 skipped_count += 1
                 continue
 
+            recipient = campaign_recipient_for_message_ids(
+                message.get("thread_message_ids"), lead=lead,
+                sender_email=message["from_email"],
+            )
+            if recipient and any(item.sender_profile_id is not None for item in recipient.outbound_emails):
+                # Explicit accounts are imported only by their own complete scan.
+                skipped_count += 1
+                continue
+
             reply = EmailReply(
                 lead_id=lead.id,
-                campaign_recipient=campaign_recipient_for_message_ids(
-                    message.get("thread_message_ids"),
-                    lead=lead,
-                    sender_email=message["from_email"],
-                ),
+                campaign_recipient=recipient,
                 from_email=message["from_email"],
                 from_name=message["from_name"],
                 subject=message["subject"],

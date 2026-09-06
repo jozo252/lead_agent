@@ -6,6 +6,14 @@
 
 No integration endpoint approves recipients, sends mail, or writes to HubSpot automatically.
 
+## Development update – 2026-09-06
+
+The worktree now contains isolated sender profiles, evidence-backed no-website
+selection and an explicitly approved one-shot follow-up worker. A code release alone
+does not enable sending or install a scheduler. The freeze on live autonomous scheduling below still
+applies until a real own-address pilot is approved. See
+`CAMPAIGN_WORKFLOW_READINESS.md` for verification, limits and rollout steps.
+
 ## Keep and reuse
 
 - `Company`, `CompanySource`, `SyncState`, `CompanyActivity`: RPO source of truth and resumable sync.

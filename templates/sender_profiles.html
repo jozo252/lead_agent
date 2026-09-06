@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Profily odosielateľov | LeadFlow{% endblock %}
+{% block content %}
+<div class="page-header"><div><h2 class="page-title">Tri samostatné schránky</h2><p class="page-subtitle">Weby, elektro a M&G-STAV majú vlastnú identitu, podpis a históriu odpovedí.</p></div></div>
+<section class="card section-gap">
+    <p>Heslá sa zadávajú iba do konfigurácie servera, nie do formulára ani databázy. Explicitný profil nikdy nepoužije prístupy inej schránky. Používateľ SMTP aj IMAP musí byť totožný s adresou odosielateľa; aliasy zatiaľ nie sú podporované.</p>
+    <form method="post" action="{{ url_for('workflow.prepare_profiles') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button type="submit">Pripraviť tri vypnuté profily</button></form>
+    <form method="post" action="{{ url_for('workflow.prepare_three_campaigns') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button type="submit" class="btn btn-secondary">Pripraviť tri neaktívne AI koncepty</button></form>
+</section>
+{% for profile in profiles %}
+<section class="card section-gap">
+    <h3>{{ profile.name }} <span class="badge">{{ 'Zapnutý' if profile.enabled else 'Vypnutý' }}</span></h3>
+    <p><code>SENDER_{{ profile.config_key }}_…</code></p>
+    {% for issue in readiness[profile.id] %}<p class="flash flash-warning">{{ issue }}</p>{% else %}<p>Konfigurácia je vyplnená. Doručiteľnosť SMTP ani správnosť hesla tým ešte nie sú overené.</p>{% endfor %}
+    <form method="post" action="{{ url_for('workflow.save_profile', profile_id=profile.id) }}" class="lead-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <div class="grid grid-2"><label>Meno odosielateľa<input name="sender_name" maxlength="100" value="{{ profile.sender_name or '' }}"></label><label>E-mail schránky<input type="email" name="sender_email" maxlength="255" value="{{ profile.sender_email or '' }}"></label></div>
+        <label>Podpis (iba overené údaje)<textarea name="signature" maxlength="4000" rows="4">{{ profile.signature or '' }}</textarea></label>
+        <label><input type="checkbox" name="enabled" style="width:auto" {% if profile.enabled %}checked{% endif %}> Povoliť profil po nastavení SMTP aj IMAP</label>
+        <p class="muted small">Zmena podpisu alebo identity zruší čakajúce follow-upy a vyžiada nové schválenie. Adresa s odoslanou históriou je nemenná.</p>
+        <div class="form-actions"><button type="submit">Uložiť profil</button><button type="submit" name="disable" value="yes" class="btn btn-secondary">Vypnúť profil</button></div>
+    </form>
+    <p>Posledná úplná kontrola schránky: {{ profile.last_synced_at or 'ešte neprebehla' }}</p>
+    {% if profile.last_sync_error %}<p class="flash flash-warning">{{ profile.last_sync_error }}</p>{% endif %}
+    <form method="post" action="{{ url_for('workflow.sync_profile', profile_id=profile.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button type="submit" class="btn btn-secondary">Skontrolovať odpovede (bez odoslania)</button></form>
+</section>
+{% endfor %}
+{% endblock %}

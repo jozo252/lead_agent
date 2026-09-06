@@ -268,6 +268,10 @@ odhlasovaciu vetu. Už existujúce návrhy príjemcov sa spätne neprepisujú.
 
 ## Bezpečné produkčné spustenie
 
+Nový balík troch profilov, overovania webu a jedného schváleného follow-upu
+je zdokumentovaný v `CAMPAIGN_WORKFLOW_READINESS.md` (vývojové overenie a release
+checklist). Stav konkrétneho nasadenia overiť na službe; pred zapnutím použiť checklist.
+
 Pred prvou externou dávkou:
 
 1. Vytvoriť čerstvú SQLite zálohu cez SQLite backup mechanizmus a overiť, že sa dá otvoriť.

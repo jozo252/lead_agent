@@ -5,10 +5,13 @@ from flask_mail import Message
 from sqlalchemy import or_, update
 
 from extensions import db, mail
-from models import Campaign, CampaignRecipient, LeadActivity, OutboundEmail
+from models import Campaign, CampaignRecipient, CampaignFollowUp, LeadActivity, OutboundEmail
 from services.campaigns import is_suppressed
 from services.contact_selection import verified_contact_matches
 from services.crm import get_or_create_company_lead
+from services.sender_profiles import send_profile_message
+from services.campaign_readiness import campaign_delivery_issues
+from services.website_presence import is_website_absence_eligible
 
 
 def utcnow():
@@ -33,13 +36,19 @@ def sent_today_count(campaign):
 def delivery_slots_used_today(campaign):
     """Count persisted SMTP attempts, including ones with an uncertain outcome."""
     today_start = utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-    return CampaignRecipient.query.filter(
+    initial_attempts = CampaignRecipient.query.filter(
         CampaignRecipient.campaign_id == campaign.id,
         or_(
             CampaignRecipient.sent_at >= today_start,
             CampaignRecipient.sending_started_at >= today_start,
         ),
     ).count()
+    follow_up_attempts = CampaignFollowUp.query.join(CampaignRecipient).filter(
+        CampaignRecipient.campaign_id == campaign.id,
+        or_(CampaignFollowUp.sent_at >= today_start,
+            CampaignFollowUp.sending_started_at >= today_start),
+    ).count()
+    return initial_attempts + follow_up_attempts
 
 
 def acquire_campaign_delivery_lock(campaign_id, timeout=DELIVERY_LOCK_TIMEOUT):
@@ -149,6 +158,9 @@ def send_campaign_recipients(campaign, requested, delivery_lock_token=None):
 def _send_campaign_recipients_locked(campaign, requested, lock_token):
     if campaign.status in {"paused", "completed", "archived"}:
         return _empty_result("Kampaň je pozastavená alebo ukončená.")
+    issues = campaign_delivery_issues(campaign)
+    if issues:
+        return _empty_result("Odosielanie nie je pripravené: " + " ".join(issues))
 
     remaining = max(0, campaign.daily_limit - delivery_slots_used_today(campaign))
     send_count = min(max(int(requested), 0), remaining)
@@ -175,7 +187,19 @@ def _send_campaign_recipients_locked(campaign, requested, lock_token):
             result["locked"] = True
             break
 
-        if campaign.automation_enabled:
+        db.session.refresh(campaign)
+        if campaign.status in {"paused", "completed", "archived"} or campaign_delivery_issues(campaign):
+            result["message"] = "Kampaň alebo schránka bola medzičasom pozastavená/nepripravená."
+            break
+        if campaign.require_no_website and not is_website_absence_eligible(recipient.company):
+            recipient.status = "draft"
+            recipient.approved_at = None
+            recipient.last_error = "Chýba aktuálne overenie, že sa web pri kontrole nenašiel."
+            db.session.commit()
+            result["unverified"] += 1
+            continue
+
+        if campaign.automation_enabled or campaign.follow_up_enabled:
             if not verified_contact_matches(
                 recipient.contact,
                 recipient.recipient_email,
@@ -228,7 +252,7 @@ def _send_campaign_recipients_locked(campaign, requested, lock_token):
                 recipients=[recipient.recipient_email],
                 body=recipient.body,
             )
-            mail.send(message)
+            send_profile_message(message, campaign.sender_profile)
             sent_externally = True
 
             lead = get_or_create_company_lead(
@@ -249,34 +273,40 @@ def _send_campaign_recipients_locked(campaign, requested, lock_token):
                     activity_type="Email odoslaný",
                     note=(
                         f"Kampaň: {campaign.name}\nPredmet: {recipient.subject}"
-                        f"\n\n{recipient.body}"
+                        f"\n\n{message.body}"
                     ),
                 )
             )
-            db.session.add(
-                OutboundEmail(
-                    lead=lead,
-                    campaign_recipient=recipient,
-                    message_id=message.msgId,
-                    recipient=recipient.recipient_email,
-                    subject=recipient.subject,
-                    body=recipient.body,
-                    sent_at=naive_utcnow(),
-                )
+            outbound = OutboundEmail(
+                lead=lead,
+                campaign_recipient=recipient,
+                message_id=message.msgId,
+                recipient=recipient.recipient_email,
+                subject=recipient.subject,
+                body=message.body,
+                sender_profile=campaign.sender_profile,
+                sent_at=naive_utcnow(),
             )
+            db.session.add(outbound)
             recipient.status = "sent"
             recipient.sent_at = utcnow()
             campaign.status = "active"
+            db.session.flush()
+            from services.campaign_followups import schedule_campaign_followup
+            schedule_campaign_followup(campaign, recipient, outbound)
             db.session.commit()
             result["sent"] += 1
         except Exception as exc:
             db.session.rollback()
             recipient = db.session.get(CampaignRecipient, recipient.id)
-            recipient.status = "sending" if sent_externally else "failed"
+            # A timeout may occur after SMTP accepted DATA. Explicit-profile
+            # attempts stay ambiguous and never return to an automatic queue.
+            uncertain = sent_externally or campaign.sender_profile_id is not None
+            recipient.status = "sending" if uncertain else "failed"
             recipient.last_error = (
-                "E-mail mohol byť odoslaný, ale zápis do databázy zlyhal; "
-                "pred opakovaním ho skontroluj."
-                if sent_externally
+                "Výsledok odoslania nie je potvrdený. E-mail mohol byť odoslaný; "
+                "pred akýmkoľvek opakovaním skontroluj schránku a históriu."
+                if uncertain
                 else str(exc)[:1000]
             )
             db.session.commit()

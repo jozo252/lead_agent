@@ -72,6 +72,8 @@ class LeadActivity(db.Model):
 
 class EmailReply(db.Model):
     id = db.Column(db.Integer, primary_key=True)
+    sender_profile_id = db.Column(db.Integer, db.ForeignKey("sender_profiles.id"), nullable=True, index=True)
+    sender_profile = db.relationship("SenderProfile")
 
     lead_id = db.Column(db.Integer, db.ForeignKey("lead.id"), nullable=True)
     campaign_recipient_id = db.Column(
@@ -108,6 +110,8 @@ class OutboundEmail(db.Model):
     __tablename__ = "outbound_emails"
 
     id = db.Column(db.Integer, primary_key=True)
+    sender_profile_id = db.Column(db.Integer, db.ForeignKey("sender_profiles.id"), nullable=True, index=True)
+    sender_profile = db.relationship("SenderProfile")
     lead_id = db.Column(
         db.Integer,
         db.ForeignKey("lead.id"),
@@ -287,6 +291,10 @@ class Company(db.Model):
     campaign_recipients = db.relationship(
         "CampaignRecipient",
         back_populates="company",
+        cascade="all, delete-orphan",
+    )
+    website_check = db.relationship(
+        "CompanyWebsiteCheck", back_populates="company", uselist=False,
         cascade="all, delete-orphan",
     )
     def __repr__(self) -> str:
@@ -543,6 +551,35 @@ class CompanyContact(db.Model):
     )
 
 
+class SenderProfile(db.Model):
+    """Public sender identity only; credentials stay in runtime configuration."""
+
+    __tablename__ = "sender_profiles"
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False)
+    config_key = db.Column(db.String(40), nullable=False, unique=True)
+    sender_name = db.Column(db.String(100), nullable=True)
+    sender_email = db.Column(db.String(255), nullable=True)
+    signature = db.Column(db.Text, nullable=True)
+    enabled = db.Column(db.Boolean, nullable=False, default=False)
+    last_synced_at = db.Column(db.DateTime, nullable=True)
+    last_sync_error = db.Column(db.Text, nullable=True)
+
+
+class CompanyWebsiteCheck(db.Model):
+    """A dated search result, not a claim that a company cannot have a website."""
+
+    __tablename__ = "company_website_checks"
+    company_id = db.Column(db.Integer, db.ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True)
+    status = db.Column(db.String(20), nullable=False, default="unknown", index=True)
+    checked_at = db.Column(db.DateTime, nullable=True, index=True)
+    evidence = db.Column(db.JSON, nullable=True)
+    searched_queries = db.Column(db.JSON, nullable=True)
+    last_error = db.Column(db.Text, nullable=True)
+    website_url = db.Column(db.Text, nullable=True)
+    company = db.relationship("Company", back_populates="website_check")
+
+
 class Campaign(db.Model):
     __tablename__ = "campaigns"
 
@@ -571,6 +608,13 @@ class Campaign(db.Model):
     target_total = db.Column(db.Integer, nullable=False, default=50)
     batch_size = db.Column(db.Integer, nullable=False, default=10)
     follow_up_days = db.Column(db.Integer, nullable=False, default=7)
+    sender_profile_id = db.Column(db.Integer, db.ForeignKey("sender_profiles.id"), nullable=True, index=True)
+    sender_profile = db.relationship("SenderProfile")
+    require_no_website = db.Column(db.Boolean, nullable=False, default=False)
+    follow_up_enabled = db.Column(db.Boolean, nullable=False, default=False)
+    follow_up_subject_template = db.Column(db.String(255), nullable=True)
+    follow_up_body_template = db.Column(db.Text, nullable=True)
+    follow_up_approved_at = db.Column(db.DateTime, nullable=True)
     contact_cooldown_days = db.Column(db.Integer, nullable=False, default=90)
     activated_at = db.Column(db.DateTime(timezone=True), nullable=True)
     last_automation_run_at = db.Column(db.DateTime(timezone=True), nullable=True)
@@ -813,6 +857,28 @@ class CampaignRecipient(db.Model):
         "EmailReply",
         back_populates="campaign_recipient",
     )
+
+
+class CampaignFollowUp(db.Model):
+    """One approved reminder per recipient; sending/unknown are never retried."""
+
+    __tablename__ = "campaign_followups"
+    id = db.Column(db.Integer, primary_key=True)
+    campaign_recipient_id = db.Column(db.Integer, db.ForeignKey("campaign_recipients.id", ondelete="CASCADE"), nullable=False, unique=True)
+    original_outbound_id = db.Column(db.Integer, db.ForeignKey("outbound_emails.id"), nullable=False)
+    sender_profile_id = db.Column(db.Integer, db.ForeignKey("sender_profiles.id"), nullable=False)
+    due_at = db.Column(db.DateTime, nullable=False, index=True)
+    subject = db.Column(db.String(255), nullable=False)
+    body = db.Column(db.Text, nullable=False)
+    status = db.Column(db.String(20), nullable=False, default="scheduled", index=True)
+    message_id = db.Column(db.String(255), nullable=True, unique=True)
+    sending_started_at = db.Column(db.DateTime, nullable=True)
+    sent_at = db.Column(db.DateTime, nullable=True)
+    last_error = db.Column(db.Text, nullable=True)
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    campaign_recipient = db.relationship("CampaignRecipient", backref=db.backref("follow_up", uselist=False, cascade="all, delete-orphan"))
+    original_outbound = db.relationship("OutboundEmail", foreign_keys=[original_outbound_id])
+    sender_profile = db.relationship("SenderProfile")
 
 
 class Suppression(db.Model):

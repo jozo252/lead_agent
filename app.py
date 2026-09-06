@@ -14,6 +14,7 @@ from commands.email import test_imap_command, test_smtp_command
 from commands.locations import import_postal_locations_command
 from commands.campaigns import run_campaigns_command
 from commands.scouts import run_scouts_command
+from commands.followups import run_followups_command
 
 
 DEFAULT_DEVELOPMENT_SECRET_KEY = "dev-secret-key-change-this"
@@ -107,10 +108,13 @@ def create_app(config=None):
     app.cli.add_command(import_postal_locations_command)
     app.cli.add_command(run_campaigns_command)
     app.cli.add_command(run_scouts_command)
+    app.cli.add_command(run_followups_command)
     from routes import main_bp
     app.register_blueprint(main_bp)
     from campaign_routes import campaign_bp
     app.register_blueprint(campaign_bp)
+    from campaign_workflow_routes import workflow_bp
+    app.register_blueprint(workflow_bp)
     from landing_page_routes import landing_page_bp
     app.register_blueprint(landing_page_bp)
     from integration_routes import integration_bp

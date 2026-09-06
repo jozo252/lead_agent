@@ -4,6 +4,7 @@ from flask import current_app
 from openai import OpenAI
 
 from services.campaigns import clean_automated_outreach_body
+from services.website_presence import is_website_absence_eligible, website_presence_summary
 
 
 class CampaignAIError(RuntimeError):
@@ -76,7 +77,7 @@ Vráť iba čistý JSON:
   "exclusion_signals": ["jasné dôvody na vyradenie"],
   "minimum_fit_score": 60,
   "subject_template": "predmet, môže použiť {{company_name}}",
-  "body_template": "slovenský e-mail do 100 slov bez oslovenia, názvu firmy a otázky; s podpisom Adam"
+  "body_template": "slovenský e-mail do 100 slov bez oslovenia, názvu firmy, otázky a podpisu; podpis doplní odosielateľský profil"
 }}
 
     Názov kampane a predstavu o zákazníkovi ber ako záväzné zacielenie. Ak názov
@@ -129,7 +130,24 @@ Vráť iba čistý JSON:
     }
 
 
+def _website_candidate_data(company):
+    summary = website_presence_summary(company)
+    return {
+        key: summary[key]
+        for key in ("status", "label", "eligible", "checked_at", "website_url")
+    } | {
+        "evidence": [
+            {"url": item.get("url"), "title": str(item.get("title") or "")[:300]}
+            for item in summary["evidence"][:3] if isinstance(item, dict)
+        ],
+    }
+
+
 def rank_campaign_candidates(campaign, candidates):
+    if campaign.require_no_website:
+        candidates = [company for company in candidates if is_website_absence_eligible(company)]
+    if not candidates:
+        return []
     candidate_rows = []
     for company in candidates:
         candidate_rows.append(
@@ -144,6 +162,7 @@ def rank_campaign_candidates(campaign, candidates):
                 "markets": company.markets,
                 "analysis_reason": company.analysis_reason,
                 "analysis_evidence": company.analysis_evidence,
+                "website_presence": _website_candidate_data(company),
             }
         )
 
@@ -163,6 +182,7 @@ Firemné výrazy: {(campaign.targeting_profile or {}).get("company_keywords", []
 Požadované obce: {(campaign.targeting_profile or {}).get("location_keywords", [])}
 Signály: {(campaign.targeting_profile or {}).get("selection_signals", [])}
 Vylúčenia: {(campaign.targeting_profile or {}).get("exclusion_signals", [])}
+Podmienka čerstvého overenia nenájdeného webu: {bool(campaign.require_no_website)}
 {stage_instruction}
 
 Firmy:
@@ -174,7 +194,7 @@ Vráť iba JSON pole. Pre každú firmu vráť:
   "fit_score": 0 až 100,
   "fit_reason": "stručný dôvod založený iba na poskytnutých údajoch",
   "subject": "predmet do 255 znakov",
-  "body": "prirodzený slovenský e-mail do 100 slov bez oslovenia, názvu firmy, otázky alebo výzvy na odpoveď; s podpisom Adam"
+  "body": "prirodzený slovenský e-mail do 100 slov bez oslovenia, názvu firmy, otázky, výzvy na odpoveď a podpisu; podpis doplní odosielateľský profil"
 }}
 
 Priamo zodpovedajúce SK NACE a obec potvrdzujú vhodný segment a môžu dostať
@@ -182,6 +202,8 @@ Priamo zodpovedajúce SK NACE a obec potvrdzujú vhodný segment a môžu dosta�
 segment ohodnoť 40 až 59 a nesúvisiaci najviac 39. Chýbajúci dôkaz potreby
 nesmieš premeniť na vymyslenú personalizáciu. Nevymýšľaj návštevu webu,
 problém, funkcie, cenu, referencie ani výsledky. Nepíš odhlasovaciu vetu.
+Stav website_presence=not_found znamená len, že sa web pri obmedzenom
+vyhľadávaní nenašiel. Nikdy z toho netvrď, že firma určite nemá web.
 Text nezačínaj pozdravom „Dobrý deň“, nepoužívaj v ňom názov firmy a nepíš
 žiadnu otázku ani výzvu na odpoveď.
 """

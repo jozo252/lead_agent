@@ -11,13 +11,16 @@ from models import (
     CompanyContact,
     Opportunity,
     Suppression,
+    SenderProfile,
+    CampaignFollowUp,
 )
 from services.campaign_ai import CampaignAIError, generate_campaign_plan
 from services.campaign_automation import (
     prepare_automated_recipients,
     run_campaign_automation,
 )
-from services.campaign_delivery import send_campaign_recipients, sent_today_count
+from services.campaign_delivery import (send_campaign_recipients, sent_today_count,
+    acquire_campaign_delivery_lock, release_campaign_delivery_lock)
 from services.campaigns import (
     best_email_contact,
     clean_automated_outreach_body,
@@ -39,6 +42,8 @@ from services.opportunity_scout import run_campaign_scout, validate_scout_querie
 from services.opportunity_conversion import convert_verified_opportunity
 from services.crm import get_or_create_company_lead
 from services.hubspot import HubSpotError, sync_lead_to_hubspot
+from services.campaign_readiness import campaign_delivery_issues
+from services.website_presence import website_presence_summary, website_absence_filter, is_website_absence_eligible
 
 
 campaign_bp = Blueprint("campaigns", __name__, url_prefix="/campaigns")
@@ -292,6 +297,10 @@ def campaign_detail(campaign_id):
         business_lines=BUSINESS_LINES,
         opportunities=opportunities,
         recipient_outcomes=RECIPIENT_OUTCOMES,
+        sender_profiles=SenderProfile.query.order_by(SenderProfile.id).all(),
+        workflow_issues=campaign_delivery_issues(campaign),
+        website_presence_summary=website_presence_summary,
+        followups=CampaignFollowUp.query.join(CampaignRecipient).filter(CampaignRecipient.campaign_id == campaign.id).order_by(CampaignFollowUp.due_at).limit(100).all(),
         target_companies_url=url_for("main.companies", **target_filters),
     )
 
@@ -388,6 +397,8 @@ def update_campaign_status(campaign_id):
     status = request.form.get("status", "")
     if status not in {"draft", "active", "paused", "completed"}:
         flash("Neplatný stav kampane.", "error")
+    elif status == "active" and campaign_delivery_issues(campaign):
+        flash("Kampaň nemožno aktivovať: " + " ".join(campaign_delivery_issues(campaign)), "error")
     elif status == "active" and campaign.automation_enabled and not campaign.targeting_profile:
         flash("Automatickej kampani chýba AI profil zacielenia.", "error")
     else:
@@ -658,6 +669,8 @@ def add_filtered_recipients(campaign_id):
         )
     }
     candidate_query = query.filter(email_exists)
+    if campaign.require_no_website:
+        candidate_query = candidate_query.filter(website_absence_filter())
     if existing_company_ids:
         candidate_query = candidate_query.filter(
             ~Company.id.in_(existing_company_ids)
@@ -732,12 +745,23 @@ def add_filtered_recipients_selected():
     methods=["POST"],
 )
 def update_recipient(campaign_id, recipient_id):
+    token = acquire_campaign_delivery_lock(campaign_id)
+    if token is None:
+        flash("Kampaň práve spracúva iný proces; schválenie nebolo zmenené.", "error")
+        return redirect(url_for("campaigns.campaign_detail", campaign_id=campaign_id))
+    try:
+        return _update_recipient_locked(campaign_id, recipient_id)
+    finally:
+        release_campaign_delivery_lock(campaign_id, token)
+
+
+def _update_recipient_locked(campaign_id, recipient_id):
     recipient = CampaignRecipient.query.filter_by(
         id=recipient_id,
         campaign_id=campaign_id,
     ).first_or_404()
-    if recipient.sent_at:
-        flash("Odoslaný e-mail už nemožno prepísať.", "error")
+    if recipient.sent_at or recipient.status in {"sending", "unknown"}:
+        flash("Odoslaný alebo neistý e-mail nemožno prepísať ani znovu schváliť. Najprv over odoslanú poštu.", "error")
         return redirect(url_for("campaigns.campaign_detail", campaign_id=campaign_id))
 
     subject = request.form.get("subject", "").strip()
@@ -755,7 +779,11 @@ def update_recipient(campaign_id, recipient_id):
     )
     recipient.last_error = None
     if action == "approve":
-        if recipient.campaign.automation_enabled and not verified_contact_matches(
+        if recipient.campaign.require_no_website and not is_website_absence_eligible(recipient.company):
+            db.session.rollback()
+            flash("Pred schválením je potrebné aktuálne overiť web firmy.", "error")
+            return redirect(url_for("campaigns.campaign_detail", campaign_id=campaign_id))
+        if (recipient.campaign.automation_enabled or recipient.campaign.follow_up_enabled) and not verified_contact_matches(
             recipient.contact,
             recipient.recipient_email,
         ):

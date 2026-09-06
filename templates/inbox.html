@@ -12,6 +12,7 @@
 
     <form method="post" action="{{ url_for('main.sync_inbox') }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <label>Schránka<select name="sender_profile_id"><option value="">Pôvodná globálna schránka</option>{% for profile in sender_profiles %}<option value="{{ profile.id }}">{{ profile.name }} · {{ profile.sender_email or 'nenastavená' }}</option>{% endfor %}</select></label>
         <button type="submit" class="btn btn-primary">Načítať nové emaily</button>
     </form>
 </div>

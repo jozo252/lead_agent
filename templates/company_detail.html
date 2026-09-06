@@ -27,6 +27,20 @@
     </div>
 </div>
 
+{% if website_presence %}
+<section class="card section-gap">
+    <h3 class="card-title">Overenie prítomnosti webu</h3>
+    <p>{{ website_presence.label }} · {{ website_presence.checked_at or 'bez kontroly' }}</p>
+    <p class="muted small">Chýbajúci kontakt v databáze nie je dôkazom neexistencie webu. Záporná kontrola platí 30 dní.</p>
+    {% if website_presence.last_error %}<p class="flash flash-warning">{{ website_presence.last_error }}</p>{% endif %}
+    <details><summary>Dotazy a podklady kontroly</summary>
+        {% for query in website_presence.searched_queries %}<p><code>{{ query }}</code></p>{% endfor %}
+        {% for evidence in website_presence.evidence %}<p>{{ evidence.get('title', evidence.get('kind', 'Podklad')) }} · {{ evidence.get('url', '') }}</p>{% else %}<p>Zatiaľ bez podkladov.</p>{% endfor %}
+    </details>
+    <form method="post" action="/companies/{{ company.id }}/check-website-presence"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button type="submit" class="btn btn-secondary">Overiť web (najviac 3 dotazy Brave API)</button></form>
+</section>
+{% endif %}
+
 <div class="grid grid-2 section-gap">
     <section class="card">
         <div class="card-header">

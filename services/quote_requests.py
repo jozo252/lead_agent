@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+import re
 from uuid import uuid4
 
 from flask_mail import Message
@@ -11,6 +12,12 @@ from services.campaigns import (
     company_suppression_value,
     email_domain,
     normalize_email,
+)
+from services.sender_profiles import (
+    SenderProfileError,
+    profile_readiness,
+    resolve_reply_sender_profile,
+    send_profile_message,
 )
 
 
@@ -194,6 +201,20 @@ def send_prepared_quote(quote_request_id, approval_token, *, authorized=False):
     quote_request = db.session.get(QuoteRequest, quote_request_id)
     if quote_request is None:
         raise ValueError("Požiadavka na cenu neexistuje.")
+    if quote_request.status != "ready" or quote_request.approval_token != approval_token:
+        raise ValueError("Ponuka už bola odoslaná alebo nemá platné schválenie.")
+
+    reply = quote_request.email_reply
+    if reply is None and OutboundEmail.query.filter(
+        OutboundEmail.lead_id == quote_request.lead_id,
+        OutboundEmail.sender_profile_id.is_not(None),
+    ).first() is not None:
+        raise SenderProfileError("Chýba pôvodná odpoveď potrebná na určenie odosielacieho účtu.")
+    profile = resolve_reply_sender_profile(reply)
+    if profile is not None:
+        issues = profile_readiness(profile)
+        if issues:
+            raise SenderProfileError(" ".join(issues))
 
     quote_request = _claim_ready_quote(quote_request_id, approval_token)
     if quote_request is None:
@@ -206,20 +227,33 @@ def send_prepared_quote(quote_request_id, approval_token, *, authorized=False):
 
     sent_externally = False
     try:
+        inbound_message_id = (
+            (reply.imap_message_id or reply.postmark_message_id or "").strip()
+            if reply is not None else ""
+        )
+        headers = None
+        if re.fullmatch(r"<[^<>\s]+>", inbound_message_id):
+            headers = {"In-Reply-To": inbound_message_id, "References": inbound_message_id}
         message = Message(
             subject=quote_request.subject,
             recipients=[quote_request.recipient_email],
             body=quote_request.body,
+            extra_headers=headers,
         )
-        mail.send(message)
+        if profile is None:
+            mail.send(message)
+        else:
+            send_profile_message(message, profile)
         sent_externally = True
 
         outbound = OutboundEmail(
             lead=quote_request.lead,
+            campaign_recipient=reply.campaign_recipient if reply is not None else None,
+            sender_profile_id=profile.id if profile is not None else None,
             message_id=message.msgId,
             recipient=quote_request.recipient_email,
             subject=quote_request.subject,
-            body=quote_request.body,
+            body=message.body,
         )
         db.session.add(outbound)
         db.session.flush()

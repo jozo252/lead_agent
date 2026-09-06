@@ -5,7 +5,7 @@ from sqlalchemy import String, cast, func, or_
 from sqlalchemy.orm import selectinload
 
 from extensions import db
-from models import Campaign, CampaignRecipient, Company, CompanyContact, Lead
+from models import Campaign, CampaignFollowUp, CampaignRecipient, Company, CompanyContact, CompanyWebsiteCheck, Lead
 from services.campaign_ai import rank_campaign_candidates
 from services.campaign_delivery import (
     acquire_campaign_delivery_lock,
@@ -24,6 +24,11 @@ from services.campaigns import (
 )
 from services.rpo_sync import enrich_company_contacts
 from services.landing_pages import ensure_landing_page_link
+from services.website_presence import (
+    WEBSITE_CHECK_MAX_AGE_DAYS,
+    is_website_absence_eligible,
+    website_absence_filter,
+)
 
 
 def utcnow():
@@ -96,6 +101,18 @@ def _local_fit_score(company, profile):
 
 
 def campaign_candidates(campaign, limit):
+    return _campaign_candidates(campaign, limit)
+
+
+def website_candidate_pool(campaign, limit=5):
+    """Read-only bounded pool for an explicit user-triggered website check."""
+    limit = max(0, min(int(limit), 10))
+    if not limit:
+        return []
+    return _campaign_candidates(campaign, limit, website_check_pool=True)
+
+
+def _campaign_candidates(campaign, limit, *, website_check_pool=False):
     profile = campaign.targeting_profile or {}
     if not profile.get("nace_keywords") and not profile.get("company_keywords"):
         raise ValueError("Kampaň nemá AI profil s použiteľnými kľúčovými slovami.")
@@ -126,6 +143,23 @@ def campaign_candidates(campaign, limit):
     excluded_ids = existing_ids | recently_contacted_ids
 
     query = Company.query.filter(Company.terminated_on.is_(None))
+    pool_ordering = []
+    if website_check_pool:
+        current = utcnow().replace(tzinfo=None)
+        query = query.outerjoin(CompanyWebsiteCheck, CompanyWebsiteCheck.company_id == Company.id)
+        pool_ordering = [CompanyWebsiteCheck.checked_at.isnot(None), CompanyWebsiteCheck.checked_at]
+        query = query.filter(
+            ~Company.contacts.any(func.lower(func.trim(CompanyContact.contact_type)) == "website"),
+            or_(
+                ~Company.website_check.has(),
+                Company.website_check.has(CompanyWebsiteCheck.status.in_(["unknown", "error"])),
+                Company.website_check.has(CompanyWebsiteCheck.checked_at.is_(None)),
+                Company.website_check.has(CompanyWebsiteCheck.checked_at < current - timedelta(days=WEBSITE_CHECK_MAX_AGE_DAYS)),
+                Company.website_check.has(CompanyWebsiteCheck.checked_at > current),
+            ),
+        )
+    elif campaign.require_no_website:
+        query = query.filter(website_absence_filter())
     if excluded_ids:
         query = query.filter(~Company.id.in_(excluded_ids))
     query = query.filter(
@@ -191,8 +225,10 @@ def campaign_candidates(campaign, limit):
         query.options(
             selectinload(Company.activities),
             selectinload(Company.contacts),
+            selectinload(Company.website_check),
         )
         .order_by(
+            *pool_ordering,
             email_exists.desc(),
             Company.outreach_relevant.desc(),
             Company.id,
@@ -208,6 +244,13 @@ def campaign_candidates(campaign, limit):
             continue
         scored.append((local_score, len(matched), company.official_name or "", company))
     scored.sort(key=lambda item: (-item[0], -item[1], item[2]))
+    if website_check_pool:
+        # Rotate past recently checked ambiguous results instead of paying to
+        # search the same first five companies on every explicit batch click.
+        scored.sort(key=lambda item: (
+            item[3].website_check is not None and item[3].website_check.checked_at is not None,
+            (item[3].website_check.checked_at or datetime.min) if item[3].website_check else datetime.min,
+        ))
     return [item[3] for item in scored[:limit]]
 
 
@@ -263,6 +306,9 @@ def prepare_automated_recipients(campaign, requested, recipient_status="approved
         if company is None:
             continue
 
+        if campaign.require_no_website and not is_website_absence_eligible(company):
+            continue
+
         require_verified = recipient_status == "approved"
         contact = best_email_contact(
             company,
@@ -279,6 +325,9 @@ def prepare_automated_recipients(campaign, requested, recipient_status="approved
                 company,
                 require_verified=require_verified,
             )
+        # Contact enrichment may just have discovered an existing website.
+        if campaign.require_no_website and not is_website_absence_eligible(company):
+            continue
         if contact is None:
             result["without_email"] += 1
             continue
@@ -346,6 +395,18 @@ def run_campaign_automation(campaign, force=False):
         release_campaign_delivery_lock(campaign_id, lock_token)
 
 
+def _has_pending_followups(campaign):
+    if not campaign.follow_up_enabled:
+        return False
+    return db.session.query(CampaignFollowUp.id).join(
+        CampaignRecipient,
+        CampaignFollowUp.campaign_recipient_id == CampaignRecipient.id,
+    ).filter(
+        CampaignRecipient.campaign_id == campaign.id,
+        CampaignFollowUp.status.in_(["scheduled", "sending", "unknown"]),
+    ).first() is not None
+
+
 def _run_campaign_automation_locked(campaign, force, lock_token):
     now = utcnow()
     if not campaign.automation_enabled:
@@ -367,7 +428,7 @@ def _run_campaign_automation_locked(campaign, force, lock_token):
     remaining_today = max(0, campaign.daily_limit - delivery_slots_used_today(campaign))
     requested = min(campaign.batch_size, remaining_total, remaining_today)
     if requested == 0:
-        if remaining_total == 0:
+        if remaining_total == 0 and not _has_pending_followups(campaign):
             campaign.status = "completed"
             campaign.completed_at = now
             db.session.commit()
@@ -392,7 +453,7 @@ def _run_campaign_automation_locked(campaign, force, lock_token):
             delivery_lock_token=lock_token,
         )
         total_sent = already_sent + delivery["sent"]
-        if total_sent >= campaign.target_total:
+        if total_sent >= campaign.target_total and not _has_pending_followups(campaign):
             campaign.status = "completed"
             campaign.completed_at = utcnow()
         if preparation["prepared"] == 0 and delivery["sent"] == 0:

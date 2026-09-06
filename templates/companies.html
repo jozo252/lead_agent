@@ -29,6 +29,7 @@
             <option value="">Web: všetky</option>
             <option value="yes" {% if filters.website == "yes" %}selected{% endif %}>Má uložený web</option>
             <option value="no" {% if filters.website == "no" %}selected{% endif %}>Bez uloženého webu</option>
+            <option value="checked_not_found" {% if filters.website == "checked_not_found" %}selected{% endif %}>Web sa pri nedávnom overení nenašiel</option>
         </select>
         <select name="analyzed">
             <option value="">Web: všetky</option>

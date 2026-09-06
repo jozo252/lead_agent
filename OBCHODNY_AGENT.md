@@ -38,7 +38,7 @@ Agent nesmie sám vymyslieť kvalifikáciu, kapacitu, referenciu, cenu ani práv
 
 ## Rozhodnutie
 
-Rozšíriť existujúci projekt `C:\Users\pc\Documents\cestakodovanim\lead_agent`. MCP je iba lokálna ovládacia vrstva nad existujúcimi službami; nevytvára druhý obchodný systém. Existujúce jadro už obsahuje databázu firiem, výber kandidátov, overovanie kontaktov, kampane, denné limity, suppression zoznam, prijímanie odpovedí a bezpečné jednorazové odoslanie.
+Rozšíriť existujúci projekt `lead_agent`. MCP je iba lokálna ovládacia vrstva nad existujúcimi službami; nevytvára druhý obchodný systém. Existujúce jadro už obsahuje databázu firiem, výber kandidátov, overovanie kontaktov, kampane, denné limity, suppression zoznam, prijímanie odpovedí a bezpečné jednorazové odoslanie.
 
 Jadro systému môže byť všeobecné, ale každý obchodný beh musí patriť do jedného samostatného profilu. Agent, ktorý v jednej kampani mieša stavebníctvo, elektro a softvér, by produkoval slabé leady, nepresné správy a nevyhodnotiteľné výsledky.
 

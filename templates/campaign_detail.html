@@ -87,7 +87,8 @@
         {% for opportunity in opportunities %}
             <article class="opportunity-item">
                 <div>
-                    <a href="{{ opportunity.source_url }}" target="_blank" rel="noopener"><strong>{{ opportunity.title }}</strong></a>
+                    {% set safe_opportunity_url = opportunity.source_url|safe_external_url %}
+                    {% if safe_opportunity_url %}<a href="{{ safe_opportunity_url }}" target="_blank" rel="noopener noreferrer"><strong>{{ opportunity.title }}</strong></a>{% else %}<strong>{{ opportunity.title }}</strong>{% endif %}
                     <p class="muted small">Zhoda {{ opportunity.fit_score }}/100 · {{ opportunity.fit_reason }}</p>
                     {% if opportunity.description %}<p>{{ opportunity.description }}</p>{% endif %}
                     <p class="muted small">{{ opportunity.source_name }} · nájdené {{ opportunity.discovered_at }}{% if opportunity.published_text %} · {{ opportunity.published_text }}{% endif %}</p>

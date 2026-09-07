@@ -512,8 +512,11 @@
                                 <div class="lead-meta">
                                     {% if lead.source %}<span class="badge">{{ lead.source }}</span>{% endif %}
                                     {% if lead.address %}<span class="muted">{{ lead.address }}</span>{% endif %}
-                                    {% if lead.website %}
-                                        <a href="{{ lead.website }}" target="_blank" class="muted">{{ lead.website }}</a>
+                                    {% set safe_website = lead.website|safe_external_url %}
+                                    {% if safe_website %}
+                                        <a href="{{ safe_website }}" target="_blank" rel="noopener noreferrer" class="muted">{{ lead.website }}</a>
+                                    {% elif lead.website %}
+                                        <span class="muted">{{ lead.website }}</span>
                                     {% else %}
                                         <span class="muted">Web chýba</span>
                                     {% endif %}
@@ -665,7 +668,7 @@
                                                     <button type="submit" class="btn-small" formaction="{{ url_for('main.save_message', lead_id=lead.id) }}">Uložiť text</button>
 
                                                     {% if lead.email %}
-                                                        <button type="submit" class="btn-small" formaction="{{ url_for('main.send_email', lead_id=lead.id) }}" onclick="return confirm('Naozaj chceš odoslať email na {{ lead.email }}?');">Odoslať email</button>
+                                                        <button type="submit" class="btn-small" formaction="{{ url_for('main.send_email', lead_id=lead.id) }}" onclick="return confirm('Naozaj chceš odoslať tento e-mail?');">Odoslať email</button>
                                                     {% else %}
                                                         <span class="missing-email">Chýba email, nedá sa odoslať.</span>
                                                     {% endif %}

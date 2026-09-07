@@ -399,10 +399,13 @@ def enrich_company_financials(
                 result = fetch_company_financials(client, company.ico or "")
                 apply_company_financials(company, result)
                 db.session.commit()
-            except Exception as exc:
+            except Exception:
                 db.session.rollback()
                 logger.exception("RÚZ financie zlyhali pre IČO %s", company.ico)
-                summary["errors"].append({"ico": company.ico, "error": str(exc)})
+                summary["errors"].append({
+                    "ico": company.ico,
+                    "error": "Načítanie finančných údajov zlyhalo. Podrobnosti sú v serverovom logu.",
+                })
                 continue
 
             summary["processed_companies"] += 1

@@ -12,7 +12,14 @@
 
     <form method="post" action="{{ url_for('main.sync_inbox') }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <label>Schránka<select name="sender_profile_id"><option value="">Pôvodná globálna schránka</option>{% for profile in sender_profiles %}<option value="{{ profile.id }}">{{ profile.name }} · {{ profile.sender_email or 'nenastavená' }}</option>{% endfor %}</select></label>
+        <label>Schránka
+            <select name="sender_profile_id">
+                <option value="">Pôvodná globálna schránka</option>
+                {% for profile in sender_profiles %}
+                    <option value="{{ profile.id }}">{{ profile.name }} · {{ profile.sender_email or 'nenastavená' }}</option>
+                {% endfor %}
+            </select>
+        </label>
         <button type="submit" class="btn btn-primary">Načítať nové emaily</button>
     </form>
 </div>
@@ -46,7 +53,11 @@
                     </div>
 
                     <div class="email-status-row">
-                        {% if email.reply_sent_at %}
+                        {% if email.reply_delivery_status == 'unknown' %}
+                            <span class="badge badge-warning">Skontrolovať odoslanie</span>
+                        {% elif email.reply_delivery_status == 'sending' %}
+                            <span class="badge badge-warning">Odosielanie sa overuje</span>
+                        {% elif email.reply_sent_at or email.reply_delivery_status == 'sent' %}
                             <span class="badge badge-sent">Odpísané</span>
                         {% elif email.ai_reply_draft %}
                             <span class="badge badge-ai">AI návrh</span>
@@ -131,6 +142,7 @@
                 <div class="reply-header">
                     <h3>Odpoveď</h3>
 
+                    {% if not selected_email.reply_sent_at and selected_email.reply_delivery_status is none %}
                     <form method="POST"
                           action="{{ url_for('main.generate_reply', reply_id=selected_email.id) }}">
                         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -138,8 +150,16 @@
                             Vygenerovať AI odpoveď
                         </button>
                     </form>
+                    {% endif %}
                 </div>
 
+                {% if selected_email.reply_delivery_status == 'unknown' %}
+                    <p class="flash flash-error">Výsledok odoslania nie je istý. Pred ďalšou akciou skontroluj odoslanú poštu.</p>
+                {% elif selected_email.reply_delivery_status == 'sending' %}
+                    <p class="flash flash-error">Odoslanie sa už spracúva. Formulár sa nedá odoslať znova.</p>
+                {% elif selected_email.reply_sent_at or selected_email.reply_delivery_status == 'sent' %}
+                    <p class="muted">Na túto správu už bola odpoveď odoslaná.</p>
+                {% else %}
                 <form method="POST"
                       action="{{ url_for('main.send_reply', reply_id=selected_email.id) }}">
 
@@ -166,6 +186,7 @@
                     </div>
 
                 </form>
+                {% endif %}
 
             </div>
 

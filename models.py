@@ -94,6 +94,10 @@ class EmailReply(db.Model):
     imap_message_id = db.Column(db.String(255), unique=True, nullable=True)
     mailbox_hash = db.Column(db.String(255), nullable=True)
     ai_reply_draft = db.Column(db.Text, nullable=True)
+    reply_delivery_status = db.Column(db.String(20), nullable=True)
+    reply_message_id = db.Column(db.String(255), unique=True, nullable=True)
+    reply_sending_started_at = db.Column(db.DateTime, nullable=True)
+    reply_last_error = db.Column(db.Text, nullable=True)
     reply_sent_at = db.Column(db.DateTime, nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 

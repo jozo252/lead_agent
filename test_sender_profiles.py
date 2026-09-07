@@ -153,6 +153,25 @@ class SenderProfileTests(unittest.TestCase):
         legacy_send.assert_called_once_with(message)
         self.assertEqual(message.body, original_body)
 
+    def test_subject_and_recipient_header_injection_are_blocked_before_transport(self):
+        malicious_messages = [
+            Message(
+                subject="Ponuka\r\nBcc: hidden@example.test",
+                recipients=["recipient@example.test"],
+                body="Text",
+            ),
+            Message(
+                subject="Ponuka",
+                recipients=["recipient@example.test\r\nBcc: hidden@example.test"],
+                body="Text",
+            ),
+        ]
+        with patch("services.sender_profiles.mail.send") as legacy_send:
+            for message in malicious_messages:
+                with self.subTest(message=message), self.assertRaises(SenderProfileError):
+                    send_profile_message(message)
+        legacy_send.assert_not_called()
+
     def test_signatures_are_idempotent_and_precede_opt_out(self):
         message = self.message(html=f"<html><body><p>Ponuka.</p><p>{OPT_OUT_FOOTER}</p></body></html>")
         self.profile.signature = "Firma <Stav>\nKontakt"

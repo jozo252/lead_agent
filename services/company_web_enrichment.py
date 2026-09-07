@@ -6,11 +6,11 @@ import re
 from datetime import datetime, timezone
 from urllib.parse import urljoin, urlparse
 
-import requests
 from bs4 import BeautifulSoup
 
 from extensions import db
 from models import Company
+from services.safe_http import SafeHttpError, safe_http_get
 
 
 MAX_PAGES_PER_COMPANY = 6
@@ -150,13 +150,13 @@ def collect_relevant_pages(
     if not root_domain:
         return []
 
-    session = requests.Session()
-    session.headers.update({"User-Agent": "LeadAgent-WebEnrichment/1.0"})
+    headers = {"User-Agent": "LeadAgent-WebEnrichment/1.0"}
 
     try:
-        root_response = session.get(website_url, timeout=(5, 15))
-        root_response.raise_for_status()
-    except requests.RequestException:
+        root_response = safe_http_get(website_url, headers=headers, timeout=15)
+        if root_response.status_code >= 400:
+            return []
+    except SafeHttpError:
         return []
 
     pages = [{
@@ -184,9 +184,10 @@ def collect_relevant_pages(
 
     for candidate_url in candidate_urls[: max(0, maximum_pages - 1)]:
         try:
-            response = session.get(candidate_url, timeout=(5, 15))
-            response.raise_for_status()
-        except requests.RequestException:
+            response = safe_http_get(candidate_url, headers=headers, timeout=15)
+            if response.status_code >= 400:
+                continue
+        except SafeHttpError:
             continue
 
         pages.append({

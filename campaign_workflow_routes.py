@@ -37,6 +37,22 @@ def cancel_scheduled_followups(campaign, reason):
             row.original_outbound.lead.next_follow_up_at = None
 
 
+def revoke_initial_approvals(campaign, reason):
+    """Require a new recipient review after changing the sending identity."""
+    return CampaignRecipient.query.filter_by(
+        campaign_id=campaign.id,
+        status="approved",
+    ).update(
+        {
+            CampaignRecipient.status: "draft",
+            CampaignRecipient.approved_at: None,
+            CampaignRecipient.sending_started_at: None,
+            CampaignRecipient.last_error: reason,
+        },
+        synchronize_session=False,
+    )
+
+
 @workflow_bp.route("/sender-profiles")
 def sender_profiles():
     profiles = SenderProfile.query.order_by(SenderProfile.id).all()
@@ -117,7 +133,9 @@ def save_profile(profile_id):
         for campaign in campaigns:
             campaign.follow_up_enabled = False
             campaign.follow_up_approved_at = None
-            cancel_scheduled_followups(campaign, "Zmena identity alebo podpisu vyžaduje nové schválenie.")
+            reason = "Zmena identity alebo podpisu vyžaduje nové schválenie."
+            revoke_initial_approvals(campaign, reason)
+            cancel_scheduled_followups(campaign, reason)
     db.session.commit()
     flash("Profil uložený. Uloženie nespúšťa kampaň ani testovací e-mail.", "success")
     return redirect(url_for("workflow.sender_profiles"))
@@ -169,6 +187,7 @@ def save_workflow_settings(campaign_id):
     except (TypeError, ValueError):
         flash("Odstup follow-upu musí byť 1 až 90 dní.", "error")
         return redirect(url_for("campaigns.campaign_detail", campaign_id=campaign.id))
+    sender_profile_changed = campaign.sender_profile_id != (profile.id if profile else None)
     campaign.sender_profile = profile
     campaign.sender_profile_id = profile.id if profile else None
     campaign.require_no_website = request.form.get("require_no_website") == "on"
@@ -182,6 +201,11 @@ def save_workflow_settings(campaign_id):
         db.session.rollback()
         flash("Follow-up nemožno zapnúť: " + " ".join(issues), "error")
         return redirect(url_for("campaigns.campaign_detail", campaign_id=campaign.id))
+    if sender_profile_changed:
+        revoke_initial_approvals(
+            campaign,
+            "Zmena profilu odosielateľa vyžaduje nové schválenie.",
+        )
     cancel_scheduled_followups(campaign, "Nastavenie kampane bolo zmenené; staré pripomenutia sa neposielajú.")
     db.session.commit()
     flash("Nastavenie uložené. Staré čakajúce pripomenutia sú zrušené; platí iba pre nové oslovenia.", "success")

@@ -4,7 +4,15 @@ from unittest.mock import patch
 
 from app import create_app
 from extensions import db
-from models import Campaign, CampaignRecipient, Company, CompanyContact, OutboundEmail
+from models import (
+    Campaign,
+    CampaignRecipient,
+    Company,
+    CompanyContact,
+    EmailReply,
+    OutboundEmail,
+    Suppression,
+)
 from services.campaign_automation import run_campaign_automation
 from services.campaign_delivery import (
     _claim_recipient,
@@ -127,6 +135,28 @@ class CampaignDeliveryLockingTests(unittest.TestCase):
         )
         self.assertIsNotNone(first_claim.sending_started_at)
 
+    def test_atomic_claim_enforces_cooldown_across_campaigns(self):
+        first_campaign = self.add_campaign()
+        first = self.add_recipient(first_campaign, 1, status="sent")
+        first.sent_at = naive_utcnow()
+        second_campaign = self.add_campaign()
+        second = CampaignRecipient(
+            campaign=second_campaign,
+            company=first.company,
+            contact=first.contact,
+            recipient_email=first.recipient_email,
+            subject="Druhá ponuka",
+            body="Nemá sa odoslať",
+            status="approved",
+            approved_at=naive_utcnow(),
+        )
+        db.session.add(second)
+        db.session.commit()
+
+        self.assertIsNone(_claim_recipient(second.id))
+        self.assertEqual(second.status, "approved")
+        self.assertIsNone(second.sending_started_at)
+
     @patch("services.campaign_delivery.mail.send")
     def test_daily_limit_counts_reserved_or_uncertain_attempts(self, send):
         campaign = self.add_campaign(daily_limit=1)
@@ -191,6 +221,71 @@ class CampaignDeliveryLockingTests(unittest.TestCase):
         self.assertEqual(manual_result["sent"], 1)
         self.assertEqual(manual.status, "sent")
         send.assert_called_once()
+
+    @patch("services.campaign_delivery.mail.send")
+    def test_suppression_added_after_precheck_blocks_atomic_claim(self, send):
+        campaign = self.add_campaign()
+        recipient = self.add_recipient(campaign, 1)
+
+        def add_suppression_during_precheck(company, email):
+            db.session.add(Suppression(scope="email", value=email.casefold()))
+            db.session.commit()
+            return None
+
+        with patch(
+            "services.campaign_delivery.is_suppressed",
+            side_effect=add_suppression_during_precheck,
+        ):
+            result = send_campaign_recipients(campaign, 1)
+
+        self.assertEqual(result["sent"], 0)
+        self.assertEqual(recipient.status, "approved")
+        send.assert_not_called()
+
+    @patch("services.campaign_delivery.mail.send")
+    def test_reply_added_after_precheck_blocks_atomic_claim(self, send):
+        campaign = self.add_campaign()
+        recipient = self.add_recipient(campaign, 1)
+
+        def add_reply_during_precheck(company, email):
+            db.session.add(EmailReply(
+                campaign_recipient_id=recipient.id,
+                from_email=email,
+                subject="Re: Test",
+                text_body="Už ma nekontaktujte.",
+            ))
+            db.session.commit()
+            return None
+
+        with patch(
+            "services.campaign_delivery.is_suppressed",
+            side_effect=add_reply_during_precheck,
+        ):
+            result = send_campaign_recipients(campaign, 1)
+
+        self.assertEqual(result["sent"], 0)
+        self.assertEqual(recipient.status, "approved")
+        send.assert_not_called()
+
+    @patch("services.campaign_delivery.mail.send")
+    def test_contact_changed_after_precheck_blocks_atomic_claim(self, send):
+        campaign = self.add_campaign(automation_enabled=True)
+        recipient = self.add_recipient(campaign, 1, contact_verified=True)
+
+        def change_contact_during_precheck(company, email):
+            recipient.contact.value = "changed@example.com"
+            db.session.commit()
+            return None
+
+        with patch(
+            "services.campaign_delivery.is_suppressed",
+            side_effect=change_contact_during_precheck,
+        ):
+            result = send_campaign_recipients(campaign, 1)
+
+        self.assertEqual(result["sent"], 0)
+        self.assertEqual(recipient.status, "approved")
+        send.assert_not_called()
 
     @patch("services.campaign_delivery.mail.send")
     def test_database_error_after_smtp_keeps_recipient_in_safe_sending_state(self, send):

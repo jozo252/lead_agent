@@ -1,7 +1,9 @@
 import re
-import requests
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin
+
+from services.email_addresses import normalize_valid_email
+from services.safe_http import SafeHttpError, safe_http_get
 
 
 EMAIL_REGEX = r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+"
@@ -42,7 +44,9 @@ def normalize_url(url):
 
 
 def is_valid_email(email):
-    email = email.lower().strip()
+    email = normalize_valid_email(email)
+    if not email:
+        return False
 
     if any(bad in email for bad in BAD_EMAIL_PARTS):
         return False
@@ -58,9 +62,9 @@ def extract_emails_from_text(text):
     clean_emails = []
 
     for email in emails:
-        email = email.strip().lower()
+        email = normalize_valid_email(email)
 
-        if is_valid_email(email) and email not in clean_emails:
+        if email and is_valid_email(email) and email not in clean_emails:
             clean_emails.append(email)
 
     return clean_emails
@@ -104,11 +108,10 @@ def find_email_on_website(website):
         try:
             url = urljoin(website, path)
 
-            response = requests.get(
+            response = safe_http_get(
                 url,
                 headers=headers,
                 timeout=8,
-                allow_redirects=True
             )
 
             if response.status_code >= 400:
@@ -131,15 +134,17 @@ def find_email_on_website(website):
 
                 if href.startswith("mailto:"):
                     email = href.replace("mailto:", "").split("?")[0]
-                    emails.append(email)
+                    email = normalize_valid_email(email)
+                    if email:
+                        emails.append(email)
 
             for email in emails:
-                email = email.lower().strip()
+                email = normalize_valid_email(email)
 
-                if is_valid_email(email) and email not in found_emails:
+                if email and is_valid_email(email) and email not in found_emails:
                     found_emails.append(email)
 
-        except requests.RequestException:
+        except SafeHttpError:
             continue
 
     if not found_emails:

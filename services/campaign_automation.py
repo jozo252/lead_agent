@@ -1,4 +1,5 @@
 import unicodedata
+import logging
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import String, cast, func, or_
@@ -19,16 +20,19 @@ from services.campaigns import (
     ensure_opt_out_footer,
     ensure_validation_disclosure,
     is_suppressed,
-    normalize_email,
     render_campaign_template,
 )
 from services.rpo_sync import enrich_company_contacts
 from services.landing_pages import ensure_landing_page_link
+from services.email_addresses import normalize_email_subject, normalize_valid_email
 from services.website_presence import (
     WEBSITE_CHECK_MAX_AGE_DAYS,
     is_website_absence_eligible,
     website_absence_filter,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 def utcnow():
@@ -332,15 +336,22 @@ def prepare_automated_recipients(campaign, requested, recipient_status="approved
             result["without_email"] += 1
             continue
 
-        email = normalize_email(contact.value)
+        email = normalize_valid_email(contact.value)
+        if email is None:
+            result["without_email"] += 1
+            continue
         if is_suppressed(company, email):
             result["suppressed"] += 1
             continue
 
-        subject = assessment["subject"] or render_campaign_template(
-            campaign.subject_template,
-            company,
+        subject = normalize_email_subject(
+            assessment["subject"] or render_campaign_template(
+                campaign.subject_template,
+                company,
+            )
         )
+        if subject is None:
+            continue
         body = assessment["body"] or render_campaign_template(
             campaign.body_template,
             company,
@@ -470,14 +481,15 @@ def _run_campaign_automation_locked(campaign, force, lock_token):
         campaign.last_run_summary = summary
         db.session.commit()
         return summary
-    except Exception as exc:
+    except Exception:
+        logger.exception("Campaign automation failed")
         db.session.rollback()
         campaign = db.session.get(Campaign, campaign.id)
         campaign.last_automation_run_at = now
-        campaign.last_automation_error = str(exc)[:2000]
+        campaign.last_automation_error = "Automatizácia zlyhala; nič ďalšie sa neodoslalo."
         campaign.last_run_summary = {
             "campaign_id": campaign.id,
-            "error": str(exc)[:2000],
+            "error": campaign.last_automation_error,
         }
         db.session.commit()
         return campaign.last_run_summary

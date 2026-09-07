@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+import logging
 import re
 from uuid import uuid4
 
@@ -13,6 +14,7 @@ from services.campaigns import (
     email_domain,
     normalize_email,
 )
+from services.email_addresses import normalize_email_subject, normalize_valid_email
 from services.sender_profiles import (
     SenderProfileError,
     profile_readiness,
@@ -23,6 +25,7 @@ from services.sender_profiles import (
 
 MONEY_QUANTUM = Decimal("0.01")
 ALLOWED_CURRENCIES = {"EUR", "CZK", "USD", "GBP", "CHF", "PLN", "HUF"}
+logger = logging.getLogger(__name__)
 
 
 def _now():
@@ -72,8 +75,8 @@ def create_quote_request(lead, email_reply):
     if existing is not None:
         return existing, False
 
-    recipient_email = normalize_email(email_reply.from_email or lead.email)
-    if recipient_email.count("@") != 1:
+    recipient_email = normalize_valid_email(email_reply.from_email or lead.email)
+    if not recipient_email:
         raise ValueError("K odpovedi nie je dostupná platná e-mailová adresa.")
 
     quote_request = QuoteRequest(
@@ -120,7 +123,10 @@ def prepare_quote(
         raise ValueError("Podpis odosielateľa je povinný a môže mať najviac 255 znakov.")
 
     amount_text = f"{amount:.2f}".replace(".", ",")
-    subject = f"Cenová ponuka – {quote_request.lead.company_name}"[:255]
+    company_name = " ".join(str(quote_request.lead.company_name or "").split())
+    subject = normalize_email_subject(f"Cenová ponuka – {company_name}"[:255])
+    if subject is None:
+        raise ValueError("Predmet cenovej ponuky nie je platný.")
     body_parts = [
         "Dobrý deň,",
         "",
@@ -203,6 +209,12 @@ def send_prepared_quote(quote_request_id, approval_token, *, authorized=False):
         raise ValueError("Požiadavka na cenu neexistuje.")
     if quote_request.status != "ready" or quote_request.approval_token != approval_token:
         raise ValueError("Ponuka už bola odoslaná alebo nemá platné schválenie.")
+    subject = normalize_email_subject(quote_request.subject)
+    recipient_email = normalize_valid_email(quote_request.recipient_email)
+    if subject is None or recipient_email is None:
+        raise ValueError("Ponuka nemá platný predmet alebo adresu príjemcu.")
+    quote_request.subject = subject
+    quote_request.recipient_email = recipient_email
 
     reply = quote_request.email_reply
     if reply is None and OutboundEmail.query.filter(
@@ -270,17 +282,15 @@ def send_prepared_quote(quote_request_id, approval_token, *, authorized=False):
         )
         db.session.commit()
         return quote_request
-    except Exception as exc:
+    except Exception:
+        logger.exception("Quote delivery failed after its database claim")
         db.session.rollback()
         stored = db.session.get(QuoteRequest, quote_request_id)
         stored.status = "unknown"
         stored.last_error = (
             "E-mail mohol byť odoslaný, ale zápis zlyhal; pred ďalšou akciou ho skontroluj."
             if sent_externally
-            else (
-                "Odoslanie nemá potvrdený výsledok; pred opakovaním skontroluj poštu. "
-                f"Chyba: {str(exc)[:800]}"
-            )
+            else "Odoslanie nemá potvrdený výsledok; pred opakovaním skontroluj poštu."
         )
         db.session.commit()
         raise

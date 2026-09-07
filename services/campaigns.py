@@ -44,7 +44,7 @@ QUOTED_REPLY_MARKER_RE = re.compile(
     r">|"
     r"[-_]{2,}\s*(?:original message|p[oô]vodn[aá] spr[aá]va)|"
     r"on\s+.+\s+wrote:|"
-    r"d[nň]a\s+.+\s+nap[ií]sal(?:a)?:|"
+    r"(?:d[nň]a|v)\s+.+\s+nap[ií]sal(?:a|\(a\))?:|"
     r"dne\s+.+\s+napsal(?:a)?:|"
     r"(?:from|od|sent|odoslan[eé]|to|komu|subject|predmet):\s+"
     r")",
@@ -60,6 +60,11 @@ EXPLICIT_OPT_OUT_REPLY_RE = re.compile(
     r"(?:\s+(?:dalsie\s+)?(?:spravy|e\s*maily|emaily|maily))?"
     r"|(?:odhlasit|odhlaste)(?:\s+(?:ma|nas))?"
     r"|(?:uz\s+)?(?:ma|nas)\s+(?:prosim\s+)?nekontaktujte"
+    r"|(?:vymazte|odstrante)\s+"
+    r"(?:(?:moj|muj|moju)\s+(?:e\s*mail|email|emailovu\s+adresu)|(?:ma|me|nas))"
+    r"(?:\s+(?:z|zo|ze)\s+(?:(?:vasej|vasi)\s+)?"
+    r"(?:databazy|zoznamu\s+kontaktov|seznamu\s+kontaktu))?"
+    r"|(?:chcem\s+sa\s+)?odhlasit"
     r")"
     r"(?:\s+(?:dakujem|vdaka))?"
 )

@@ -61,7 +61,8 @@
             <dt>Celkové výnosy</dt><dd>{% if company.annual_total_income is not none %}{{ "{:,.0f}".format(company.annual_total_income)|replace(",", " ") }} €{% else %}—{% endif %}</dd>
             <dt>Zisk po zdanení</dt><dd>{% if company.annual_profit is not none %}{{ "{:,.0f}".format(company.annual_profit)|replace(",", " ") }} €{% else %}—{% endif %}</dd>
             <dt>Financie skontrolované</dt><dd>{{ company.financials_checked_at or "—" }}</dd>
-            <dt>Finančný zdroj</dt><dd>{% if company.financial_source_url %}<a href="{{ company.financial_source_url }}" target="_blank" rel="noopener">RÚZ · závierka {{ company.financial_statement_id }}</a>{% else %}—{% endif %}</dd>
+            {% set safe_financial_url = company.financial_source_url|safe_external_url %}
+            <dt>Finančný zdroj</dt><dd>{% if safe_financial_url %}<a href="{{ safe_financial_url }}" target="_blank" rel="noopener noreferrer">RÚZ · závierka {{ company.financial_statement_id }}</a>{% elif company.financial_source_url %}Neplatný odkaz{% else %}—{% endif %}</dd>
             <dt>Ulica</dt><dd>{{ company.street or "—" }}</dd>
             <dt>PSČ</dt><dd>{{ company.postal_code or "—" }}</dd>
             <dt>Obec</dt><dd>{{ company.municipality or "—" }}</dd>
@@ -99,8 +100,9 @@
                         {% endif %}
                         <span class="muted small">Confidence: {{ contact.confidence_score if contact.confidence_score is not none else "—" }}</span>
                     </div>
-                    {% if contact.source_url %}
-                        <a class="small" href="{{ contact.source_url }}" target="_blank" rel="noopener">Zdroj</a>
+                    {% set safe_source_url = contact.source_url|safe_external_url %}
+                    {% if safe_source_url %}
+                        <a class="small" href="{{ safe_source_url }}" target="_blank" rel="noopener noreferrer">Zdroj</a>
                     {% endif %}
                 </article>
             {% else %}
@@ -194,7 +196,8 @@
             <ul class="activity-list">
                 {% for evidence in company.analysis_evidence %}
                     {% if evidence.quote and evidence.source_url %}
-                        <li>{{ evidence.quote }} <a class="small" href="{{ evidence.source_url }}" target="_blank" rel="noopener">Zdroj</a></li>
+                        {% set safe_evidence_url = evidence.source_url|safe_external_url %}
+                        <li>{{ evidence.quote }}{% if safe_evidence_url %} <a class="small" href="{{ safe_evidence_url }}" target="_blank" rel="noopener noreferrer">Zdroj</a>{% endif %}</li>
                     {% else %}
                         <li>{{ evidence }}</li>
                     {% endif %}
@@ -230,7 +233,8 @@
         <details class="source-item">
             <summary>{{ source.source_type }} · ID {{ source.source_id }} · načítané {{ source.fetched_at }}</summary>
             <div class="details-body">
-                {% if source.resource_url %}<p><a href="{{ source.resource_url }}" target="_blank" rel="noopener">Otvoriť RPO zdroj</a></p>{% endif %}
+                {% set safe_resource_url = source.resource_url|safe_external_url %}
+                {% if safe_resource_url %}<p><a href="{{ safe_resource_url }}" target="_blank" rel="noopener noreferrer">Otvoriť RPO zdroj</a></p>{% endif %}
                 <pre>{{ source.raw_data|tojson(indent=2) }}</pre>
             </div>
         </details>

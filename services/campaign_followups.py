@@ -137,7 +137,7 @@ def sync_profile_inbox(profile, since_datetime=None):
         if since_datetime is None and outbounds:
             since_datetime = min(_naive_utc(item.sent_at) for item in outbounds)
         messages = fetch_profile_messages(profile, since_datetime=since_datetime)
-        result = {"imported": 0, "skipped": 0, "cancelled": 0}
+        result = {"imported": 0, "reconciled": 0, "skipped": 0, "cancelled": 0}
         for message in messages:
             outbound = _matching_outbound(message, outbounds)
             if outbound is None:
@@ -146,9 +146,43 @@ def sync_profile_inbox(profile, since_datetime=None):
             message_id = _message_identity(message, profile_id)
             existing = EmailReply.query.filter_by(imap_message_id=message_id).first()
             if existing:
-                if existing.sender_profile_id != profile_id:
+                same_reply = (
+                    existing.lead_id == outbound.lead_id
+                    and existing.campaign_recipient_id in {
+                        None, outbound.campaign_recipient_id,
+                    }
+                    and (
+                        not existing.from_email
+                        or normalize_email(existing.from_email)
+                        == normalize_email(message.get("from_email"))
+                    )
+                )
+                if not same_reply:
+                    raise ValueError("Identifikátor správy patrí inému leadu; nutná kontrola.")
+                if existing.sender_profile_id not in {None, profile_id}:
                     raise ValueError("Identifikátor správy už patrí inému profilu; nutná kontrola.")
-                result["skipped"] += 1
+                if existing.sender_profile_id is None:
+                    existing.sender_profile_id = profile_id
+                    existing.campaign_recipient = outbound.campaign_recipient
+                    result["reconciled"] += 1
+                else:
+                    result["skipped"] += 1
+
+                received_at = _naive_utc(existing.received_at) or _now()
+                outbound.lead.status = "Odpovedal"
+                outbound.lead.next_follow_up_at = None
+                suppression = mark_campaign_recipient_replied(
+                    outbound.campaign_recipient,
+                    received_at,
+                    reply_body=str(message.get("body") or existing.text_body or "")[:20000],
+                    sender_email=message.get("from_email") or existing.from_email,
+                )
+                if suppression is not None:
+                    db.session.add(suppression)
+                result["cancelled"] += _cancel_for_reply(
+                    outbound.lead_id,
+                    "Príjemca odpovedal; ďalšie automatické správy sú zrušené.",
+                )
                 continue
             received_at = _naive_utc(message.get("received_at")) or _now()
             reply = EmailReply(

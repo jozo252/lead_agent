@@ -1,8 +1,12 @@
 from datetime import datetime, timezone
+import logging
 from urllib.parse import quote, urlparse
 
 import requests
 from flask import current_app
+
+
+logger = logging.getLogger(__name__)
 
 
 class HubSpotError(RuntimeError):
@@ -27,13 +31,14 @@ def _request(method, path, *, json=None, params=None, allow_not_found=False):
             timeout=20,
         )
     except requests.RequestException as exc:
-        raise HubSpotError(f"HubSpot API nie je dostupné: {exc}") from exc
+        logger.exception("HubSpot API request failed")
+        raise HubSpotError("HubSpot API momentálne nie je dostupné.") from exc
 
     if allow_not_found and response.status_code == 404:
         return None
     if not response.ok:
-        detail = response.text.strip()[:500]
-        raise HubSpotError(f"HubSpot API vrátilo HTTP {response.status_code}: {detail}")
+        logger.error("HubSpot API returned HTTP %s", response.status_code)
+        raise HubSpotError(f"HubSpot API vrátilo HTTP {response.status_code}.")
     if response.status_code == 204 or not response.content:
         return {}
     try:

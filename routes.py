@@ -37,17 +37,46 @@ from services.campaigns import (
 )
 from services.postal_locations import LocationLookupError
 from services.quote_requests import create_quote_request, submit_price_and_send
-from services.sender_profiles import resolve_reply_sender_profile, send_profile_message
+from services.campaign_followups import sync_profile_inbox
+from services.manual_replies import ManualReplySendError, send_manual_reply
+from services.email_addresses import normalize_email_subject, normalize_valid_email
+from services.sender_profiles import SenderProfileError, send_profile_message
+from services.safe_http import normalize_http_url
 from email.utils import parseaddr
 from sqlalchemy import false, func, or_, and_
+from urllib.parse import urlsplit
 
 
 main_bp = Blueprint("main", __name__)
 
 
+def _safe_referrer(default_url):
+    """Return only a same-origin referrer, otherwise the explicit local URL."""
+    referrer = request.referrer
+    if not referrer:
+        return default_url
+    try:
+        target = urlsplit(referrer)
+        origin = urlsplit(request.host_url)
+    except ValueError:
+        return default_url
+    if (
+        target.scheme == origin.scheme
+        and target.netloc.casefold() == origin.netloc.casefold()
+    ):
+        # Return a local absolute path. Collapsing leading slashes prevents a
+        # same-origin referrer path such as //attacker.example from becoming a
+        # scheme-relative redirect.
+        path = "/" + (target.path or "/").lstrip("/")
+        return path + (f"?{target.query}" if target.query else "")
+    return default_url
+
+
 def _manual_send_blocker(company, address, lead=None):
     """Legacy forms may not bypass a campaign account or an opt-out."""
-    normalized = (address or "").strip().casefold()
+    normalized = normalize_valid_email(address)
+    if not normalized:
+        return "Príjemca nemá platnú e-mailovú adresu."
     if company is not None and is_suppressed(company, normalized):
         return "Príjemca je na suppression zozname; správa nebola odoslaná."
     if Suppression.query.filter(or_(
@@ -490,11 +519,7 @@ def enrich_single_company_contacts(company_id):
     )
 
     if summary["errors"]:
-        flash(
-            "Kontakty sa nepodarilo načítať: "
-            f"{summary['errors'][0]['error']}",
-            "error",
-        )
+        flash("Kontakty sa nepodarilo načítať. Podrobnosti sú v serverovom logu.", "error")
     elif summary["companies_with_contacts"]:
         flash(
             "Hľadanie kontaktov bolo dokončené: "
@@ -523,10 +548,7 @@ def enrich_single_company_financials(company_id):
         delay_seconds=0,
     )
     if summary["errors"]:
-        flash(
-            f"RÚZ financie sa nepodarilo načítať: {summary['errors'][0]['error']}",
-            "error",
-        )
+        flash("RÚZ financie sa nepodarilo načítať. Podrobnosti sú v serverovom logu.", "error")
     elif summary["companies_with_financials"]:
         flash(
             f"Finančné údaje za rok {company.financial_year} boli načítané.",
@@ -578,9 +600,10 @@ def generate_company_outreach(company_id):
             )
             db.session.commit()
             flash("Návrh oslovenia bol vygenerovaný. Pred odoslaním ho skontroluj.", "success")
-        except Exception as exc:
+        except Exception:
+            current_app.logger.exception("Company outreach generation failed")
             db.session.rollback()
-            flash(f"Generovanie oslovenia zlyhalo: {exc}", "error")
+            flash("Generovanie oslovenia zlyhalo. Podrobnosti sú v serverovom logu.", "error")
 
     return redirect(url_for("main.company_detail", company_id=company.id))
 
@@ -594,7 +617,7 @@ def send_company_outreach(company_id):
     if blocked:
         flash(blocked, "error")
         return redirect(url_for("main.company_detail", company_id=company.id))
-    subject = request.form.get("subject", "").strip()
+    subject = normalize_email_subject(request.form.get("subject", ""))
     message_text = request.form.get("message", "").strip()
     industry = request.form.get("industry", "").strip()
     custom_industry = request.form.get("custom_industry", "").strip()
@@ -627,7 +650,7 @@ def send_company_outreach(company_id):
     try:
         lead = get_or_create_company_lead(company, email, work_type)
         message = Message(subject=subject, recipients=[email], body=message_text)
-        mail.send(message)
+        send_profile_message(message)
 
         lead.suggested_message = message_text
         lead.status = "Oslovený"
@@ -650,9 +673,10 @@ def send_company_outreach(company_id):
             )
         )
         db.session.commit()
-    except Exception as exc:
+    except Exception:
+        current_app.logger.exception("Company outreach delivery failed")
         db.session.rollback()
-        flash(f"E-mail sa nepodarilo odoslať: {exc}", "error")
+        flash("E-mail sa nepodarilo bezpečne odoslať. Skontroluj odoslanú poštu.", "error")
         return redirect(url_for("main.company_detail", company_id=company.id))
 
     flash("E-mail bol odoslaný a follow-up je uložený v CRM.", "success")
@@ -670,9 +694,10 @@ def analyze_company_website(company_id):
             f"Web bol analyzovaný z {result['pages']} stránok.",
             "success",
         )
-    except Exception as exc:
+    except Exception:
+        current_app.logger.exception("Company website analysis failed")
         db.session.rollback()
-        flash(f"Analýza webu zlyhala: {exc}", "error")
+        flash("Analýza webu zlyhala. Podrobnosti sú v serverovom logu.", "error")
 
     return redirect(url_for("main.company_detail", company_id=company.id))
 
@@ -682,9 +707,19 @@ def home():
 
     if request.method == "POST":
         company_name = request.form.get("company_name", "").strip()
+        raw_website = request.form.get("website", "").strip()
+        website = normalize_http_url(raw_website) if raw_website else None
+        raw_email = request.form.get("email", "").strip()
+        email = normalize_valid_email(raw_email) if raw_email else None
 
         if not company_name:
             flash("Názov firmy je povinný.", "error")
+            return redirect(url_for("main.home"))
+        if raw_website and website is None:
+            flash("Web musí byť platná verejná HTTP alebo HTTPS adresa.", "error")
+            return redirect(url_for("main.home"))
+        if raw_email and email is None:
+            flash("E-mail nemá platný formát.", "error")
             return redirect(url_for("main.home"))
 
         lead_score_raw = request.form.get("lead_score", "3")
@@ -698,8 +733,8 @@ def home():
 
         lead = Lead(
             company_name=company_name,
-            website=request.form.get("website", "").strip(),
-            email=request.form.get("email", "").strip(),
+            website=website,
+            email=email,
             phone=request.form.get("phone", "").strip(),
             city=request.form.get("city", "").strip(),
             country=request.form.get("country", "Slovensko").strip() or "Slovensko",
@@ -843,29 +878,35 @@ def generate_message(lead_id):
         db.session.commit()
         flash("Oslovenie bolo vygenerované.", "success")
 
-    except Exception as e:
+    except Exception:
+        current_app.logger.exception("Lead outreach generation failed")
         db.session.rollback()
-        flash(f"Chyba pri generovaní oslovenia: {str(e)}", "error")
+        flash("Generovanie oslovenia zlyhalo. Podrobnosti sú v serverovom logu.", "error")
 
-    return redirect(request.referrer or url_for("main.home"))
+    return redirect(_safe_referrer(url_for("main.home")))
 
 @main_bp.route("/lead/<int:lead_id>/save-message", methods=["POST"])
 def save_message(lead_id):
     lead = Lead.query.get_or_404(lead_id)
 
     message = request.form.get("suggested_message", "").strip()
-    subject = request.form.get("email_subject", "").strip()
+    raw_subject = request.form.get("email_subject", "")
+    subject = normalize_email_subject(raw_subject) if raw_subject.strip() else None
 
     if not message:
         flash("Text správy nemôže byť prázdny.", "error")
         return redirect(url_for("main.home"))
 
     lead.suggested_message = message
-    lead.suggested_subject = subject[:255] or lead.suggested_subject
+    if raw_subject.strip() and subject is None:
+        flash("Predmet musí byť jeden platný riadok s najviac 255 znakmi.", "error")
+        return redirect(_safe_referrer(url_for("main.home")))
+
+    lead.suggested_subject = subject or lead.suggested_subject
     db.session.commit()
 
     flash("Text oslovenia bol uložený.", "success")
-    return redirect(request.referrer or url_for("main.home"))
+    return redirect(_safe_referrer(url_for("main.home")))
 
 
 @main_bp.route("/lead/<int:lead_id>/send-email", methods=["POST"])
@@ -877,7 +918,8 @@ def send_email(lead_id):
         return redirect(url_for("main.lead_detail", lead_id=lead.id))
 
     message_text = request.form.get("suggested_message", "").strip()
-    subject = request.form.get("email_subject", "").strip()
+    raw_subject = request.form.get("email_subject", "")
+    subject = normalize_email_subject(raw_subject) if raw_subject.strip() else None
 
     if not lead.email:
         flash("Lead nemá vyplnený email.", "error")
@@ -885,8 +927,11 @@ def send_email(lead_id):
 
     if not message_text:
         flash("Text emailu nemôže byť prázdny.", "error")
-        return redirect(request.referrer or url_for("main.home"))
+        return redirect(_safe_referrer(url_for("main.home")))
 
+    if raw_subject.strip() and subject is None:
+        flash("Predmet musí byť jeden platný riadok s najviac 255 znakmi.", "error")
+        return redirect(_safe_referrer(url_for("main.home")))
     if not subject:
         subject = "Možnosť spolupráce"
 
@@ -897,10 +942,10 @@ def send_email(lead_id):
             body=message_text
         )
 
-        mail.send(msg)
+        send_profile_message(msg)
 
         lead.suggested_message = message_text
-        lead.suggested_subject = subject[:255]
+        lead.suggested_subject = subject
         lead.status = "Oslovený"
         lead.last_contacted_at = datetime.utcnow()
 
@@ -924,9 +969,10 @@ def send_email(lead_id):
 
         flash("Email bol odoslaný a lead označený ako oslovený.", "success")
 
-    except Exception as e:
+    except Exception:
+        current_app.logger.exception("Legacy lead delivery failed")
         db.session.rollback()
-        flash(f"Email sa nepodarilo odoslať: {str(e)}", "error")
+        flash("E-mail sa nepodarilo bezpečne odoslať. Skontroluj odoslanú poštu.", "error")
 
     return redirect(url_for("main.home"))
 
@@ -981,7 +1027,7 @@ def find_leads():
                 lead = Lead(
                     google_place_id=google_place_id,
                     company_name=place.get("company_name") or "Neznáma firma",
-                    website=place.get("website"),
+                    website=normalize_http_url(place.get("website")),
                     phone=place.get("phone"),
                     address=place.get("address"),
                     business_status=place.get("business_status"),
@@ -1002,8 +1048,9 @@ def find_leads():
                 db.session.add(lead)
                 created_count += 1
 
-        except Exception as e:
-            flash(f"Chyba pri hľadaní pre dotaz '{query}': {str(e)}", "error")
+        except Exception:
+            current_app.logger.exception("Lead search failed for query %r", query)
+            flash(f"Hľadanie pre dotaz '{query}' zlyhalo.", "error")
 
     db.session.commit()
 
@@ -1129,9 +1176,10 @@ def analyze_lead_route(lead_id):
         db.session.commit()
         flash("Lead bol vyhodnotený cez AI.", "success")
 
-    except Exception as e:
+    except Exception:
+        current_app.logger.exception("Lead AI analysis failed")
         db.session.rollback()
-        flash(f"Chyba pri AI vyhodnotení leadu: {str(e)}", "error")
+        flash("AI vyhodnotenie leadu zlyhalo. Podrobnosti sú v serverovom logu.", "error")
 
     return redirect(url_for("main.lead_detail", lead_id=lead.id))
 
@@ -1157,7 +1205,7 @@ def update_lead_basic(lead_id):
     db.session.commit()
 
     flash("Lead bol upravený.", "success")
-    return redirect(request.referrer or url_for("main.lead_detail", lead_id=lead.id))
+    return redirect(_safe_referrer(url_for("main.lead_detail", lead_id=lead.id)))
 
 
 @main_bp.route("/lead/<int:lead_id>/set-follow-up", methods=["POST"])
@@ -1170,13 +1218,13 @@ def set_follow_up(lead_id):
         lead.next_follow_up_at = None
         db.session.commit()
         flash("Follow-up bol odstránený.", "success")
-        return redirect(request.referrer or url_for("main.home"))
+        return redirect(_safe_referrer(url_for("main.home")))
 
     try:
         follow_up_date = datetime.strptime(follow_up_date_raw, "%Y-%m-%d")
     except ValueError:
         flash("Neplatný dátum follow-upu.", "error")
-        return redirect(request.referrer or url_for("main.home"))
+        return redirect(_safe_referrer(url_for("main.home")))
 
     lead.next_follow_up_at = follow_up_date
     activity = LeadActivity(
@@ -1193,7 +1241,7 @@ def set_follow_up(lead_id):
     db.session.commit()
 
     flash("Follow-up bol nastavený.", "success")
-    return redirect(request.referrer or url_for("main.home"))
+    return redirect(_safe_referrer(url_for("main.home")))
 
 @main_bp.route("/lead/<int:lead_id>/add-activity", methods=["POST"])
 def add_activity(lead_id):
@@ -1228,9 +1276,51 @@ def add_activity(lead_id):
 def check_reply(lead_id):
     lead = Lead.query.get_or_404(lead_id)
 
+    profile_ids = [
+        profile_id
+        for profile_id, in db.session.query(OutboundEmail.sender_profile_id)
+        .filter(
+            OutboundEmail.lead_id == lead.id,
+            OutboundEmail.sender_profile_id.isnot(None),
+        )
+        .distinct()
+        .order_by(OutboundEmail.sender_profile_id)
+        .all()
+    ]
+    if profile_ids:
+        totals = {"imported": 0, "reconciled": 0, "cancelled": 0}
+        try:
+            for profile_id in profile_ids:
+                profile = db.session.get(SenderProfile, profile_id)
+                if profile is None:
+                    raise RuntimeError("Pôvodný profil schránky už nie je dostupný.")
+                result = sync_profile_inbox(profile)
+                for key in totals:
+                    totals[key] += int(result.get(key, 0))
+        except Exception:
+            db.session.rollback()
+            flash(
+                "Kontrola profilovej schránky nebola úplná; žiadny follow-up sa preto neodošle.",
+                "error",
+            )
+            return redirect(
+                _safe_referrer(url_for("main.lead_detail", lead_id=lead.id))
+            )
+
+        if totals["imported"] or totals["reconciled"]:
+            flash(
+                "Profilová schránka bola skontrolovaná a odpovede sa bezpečne priradili.",
+                "success",
+            )
+        else:
+            flash("V profilovej schránke nebola nájdená nová odpoveď.", "info")
+        return redirect(
+            _safe_referrer(url_for("main.lead_detail", lead_id=lead.id))
+        )
+
     if not lead.email:
         flash("Lead nemá email, nemám podľa čoho hľadať odpoveď.", "error")
-        return redirect(request.referrer or url_for("main.lead_detail", lead_id=lead.id))
+        return redirect(_safe_referrer(url_for("main.lead_detail", lead_id=lead.id)))
 
     try:
         reply = check_reply_from_sender(
@@ -1244,7 +1334,7 @@ def check_reply(lead_id):
 
         if not reply:
             flash("Zatiaľ som nenašiel odpoveď od tejto firmy.", "error")
-            return redirect(request.referrer or url_for("main.lead_detail", lead_id=lead.id))
+            return redirect(_safe_referrer(url_for("main.lead_detail", lead_id=lead.id)))
 
         subject = reply.get("subject", "")
         received_at = reply.get("received_at")
@@ -1259,8 +1349,7 @@ def check_reply(lead_id):
         ):
             flash("Táto odpoveď už je uložená v CRM.", "info")
             return redirect(
-                request.referrer
-                or url_for("main.lead_detail", lead_id=lead.id)
+                _safe_referrer(url_for("main.lead_detail", lead_id=lead.id))
             )
 
         note = f"Predmet: {subject}\n"
@@ -1277,6 +1366,9 @@ def check_reply(lead_id):
         )
 
         from_name, from_email = parseaddr(reply.get("from", ""))
+        from_email = normalize_valid_email(from_email or lead.email)
+        if not from_email:
+            raise ValueError("Odpoveď nemá platnú adresu odosielateľa.")
         email_reply = EmailReply(
             lead_id=lead.id,
             campaign_recipient=campaign_recipient_for_message_ids(
@@ -1284,7 +1376,7 @@ def check_reply(lead_id):
                 lead=lead,
                 sender_email=from_email or lead.email,
             ),
-            from_email=from_email or lead.email,
+            from_email=from_email,
             from_name=from_name or None,
             subject=subject,
             text_body=body,
@@ -1309,11 +1401,12 @@ def check_reply(lead_id):
 
         flash("Našiel som odpoveď a zapísal ju do histórie.", "success")
 
-    except Exception as e:
+    except Exception:
+        current_app.logger.exception("Lead inbox check failed")
         db.session.rollback()
-        flash(f"Kontrola odpovede zlyhala: {str(e)}", "error")
+        flash("Kontrola odpovede zlyhala; nič sa neodoslalo.", "error")
 
-    return redirect(request.referrer or url_for("main.lead_detail", lead_id=lead.id))
+    return redirect(_safe_referrer(url_for("main.lead_detail", lead_id=lead.id)))
 
 
 @main_bp.route("/lead/<int:lead_id>/find-email", methods=["POST"])
@@ -1388,6 +1481,12 @@ def generate_reply(reply_id):
     if not reply.lead:
         flash("Odpoveď nie je priradená k žiadnemu leadu.", "error")
         return redirect(url_for("main.home"))
+    if reply.reply_sent_at or reply.reply_delivery_status is not None:
+        flash(
+            "K tejto odpovedi už prebehlo odoslanie alebo treba skontrolovať jeho výsledok.",
+            "error",
+        )
+        return redirect(url_for("main.lead_detail", lead_id=reply.lead.id))
 
     draft = generate_reply_to_customer(reply.lead, reply)
 
@@ -1404,81 +1503,30 @@ def generate_reply(reply_id):
 @main_bp.route("/reply/<int:reply_id>/send", methods=["POST"])
 def send_reply(reply_id):
     reply = EmailReply.query.get_or_404(reply_id)
-
-    if not reply.lead:
-        flash("Odpoveď nie je priradená k leadu.", "error")
-        return redirect(url_for("main.home"))
-
-    company = reply.lead.company
-    address = (reply.from_email or "").strip().casefold()
-    domain = address.rsplit("@", 1)[-1]
-    suppressed = is_suppressed(company, address) if company else Suppression.query.filter(
-        or_(and_(Suppression.scope == "email", Suppression.value == address),
-            and_(Suppression.scope == "domain", Suppression.value == domain)),
-    ).first()
-    if suppressed:
-        flash("Príjemca je na suppression zozname; odpoveď nebola odoslaná.", "error")
-        return redirect(url_for("main.lead_detail", lead_id=reply.lead.id))
-
-    reply_body = request.form.get("reply_body")
-
-    if not reply_body:
-        flash("Text odpovede je prázdny.", "error")
-        return redirect(url_for("main.lead_detail", lead_id=reply.lead.id))
-
-    subject = reply.subject or "Re: Spolupráca"
-
-    if not subject.lower().startswith("re:"):
-        subject = "Re: " + subject
-
-    inbound_message_id = reply.imap_message_id or reply.postmark_message_id
-    extra_headers = {}
-
-    if inbound_message_id:
-        extra_headers["In-Reply-To"] = inbound_message_id
-        extra_headers["References"] = inbound_message_id
-
+    lead_id = reply.lead_id
     try:
-        sender_profile = resolve_reply_sender_profile(reply)
-        message = Message(
-            subject=subject,
-            recipients=[reply.from_email],
-            body=reply_body,
-            extra_headers=extra_headers or None,
+        send_manual_reply(
+            reply.id,
+            request.form.get("reply_body"),
+            authorized=True,
         )
-        send_profile_message(message, sender_profile)
-
-        reply.ai_reply_draft = message.body
-        reply.reply_sent_at = datetime.utcnow()
-        reply.lead.status = "Odpovedané"
-        reply.lead.last_contacted_at = datetime.utcnow()
-        reply.lead.next_follow_up_at = None
-        db.session.add(
-            OutboundEmail(
-                lead=reply.lead,
-                campaign_recipient=reply.campaign_recipient,
-                sender_profile=sender_profile,
-                message_id=message.msgId,
-                recipient=reply.from_email,
-                subject=subject,
-                body=message.body,
-            )
-        )
-        db.session.add(
-            LeadActivity(
-                lead=reply.lead,
-                activity_type="Email odoslaný",
-                note=f"Odpoveď na: {subject}\n\n{message.body}",
-            )
-        )
-        db.session.commit()
-    except Exception as exc:
+    except (ManualReplySendError, SenderProfileError) as exc:
         db.session.rollback()
         flash(f"Nepodarilo sa odoslať odpoveď: {exc}", "error")
-        return redirect(url_for("main.lead_detail", lead_id=reply.lead.id))
+        return redirect(
+            url_for("main.lead_detail", lead_id=lead_id)
+            if lead_id else url_for("main.home")
+        )
+    except Exception:
+        db.session.rollback()
+        flash("Nepodarilo sa bezpečne spracovať odoslanie odpovede.", "error")
+        return redirect(
+            url_for("main.lead_detail", lead_id=lead_id)
+            if lead_id else url_for("main.home")
+        )
 
     flash("Odpoveď bola odoslaná.", "success")
-    return redirect(url_for("main.lead_detail", lead_id=reply.lead.id))
+    return redirect(url_for("main.lead_detail", lead_id=lead_id))
 
 
 
@@ -1507,9 +1555,10 @@ def sync_lead_hubspot(lead_id):
         sync_lead_to_hubspot(lead, note_body=note_body)
         db.session.commit()
         flash("Lead bol synchronizovaný do HubSpotu.", "success")
-    except HubSpotError as exc:
+    except HubSpotError:
+        current_app.logger.exception("HubSpot lead synchronization failed")
         db.session.rollback()
-        flash(f"HubSpot synchronizácia zlyhala: {exc}", "error")
+        flash("HubSpot synchronizácia zlyhala. Podrobnosti sú v serverovom logu.", "error")
 
     return redirect(url_for("main.lead_detail", lead_id=lead.id))
 
@@ -1523,7 +1572,8 @@ def inbox():
     return render_template(
         "inbox.html",
         emails=emails,
-        selected_email=None
+        selected_email=None,
+        sender_profiles=SenderProfile.query.order_by(SenderProfile.id).all(),
     )
 
 
@@ -1580,7 +1630,6 @@ def sync_inbox():
         if not profile_id.isdigit():
             flash("Vyber platný profil schránky.", "error")
             return redirect(url_for("main.inbox"))
-        from services.campaign_followups import sync_profile_inbox
         profile = SenderProfile.query.get_or_404(int(profile_id))
         try:
             result = sync_profile_inbox(profile)
@@ -1675,9 +1724,10 @@ def sync_inbox():
             f"preskočené {skipped_count} známych alebo neplatných.",
             "success",
         )
-    except Exception as exc:
+    except Exception:
+        current_app.logger.exception("Legacy inbox synchronization failed")
         db.session.rollback()
-        flash(f"Inbox sa nepodarilo načítať: {exc}", "error")
+        flash("Inbox sa nepodarilo bezpečne načítať; nič sa neodoslalo.", "error")
 
     return redirect(url_for("main.inbox"))
 

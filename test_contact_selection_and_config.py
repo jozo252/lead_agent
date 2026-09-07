@@ -99,6 +99,7 @@ class ProductionSecretConfigTests(unittest.TestCase):
             "TESTING": True,
             "SQLALCHEMY_DATABASE_URI": "sqlite://",
             "APP_ENV": "development",
+            "INTERNAL_PROXY_TOKEN": "proxy-test-token-at-least-32-characters",
         }
         config.update(overrides)
         return config
@@ -113,6 +114,15 @@ class ProductionSecretConfigTests(unittest.TestCase):
                 self.app_config(
                     APP_ENV="prod",
                     SECRET_KEY=DEFAULT_DEVELOPMENT_SECRET_KEY,
+                )
+            )
+
+    def test_production_rejects_short_secret(self):
+        with self.assertRaisesRegex(RuntimeError, "at least 32"):
+            create_app(
+                self.app_config(
+                    APP_ENV="production",
+                    SECRET_KEY="too-short",
                 )
             )
 
@@ -131,6 +141,25 @@ class ProductionSecretConfigTests(unittest.TestCase):
         self.assertTrue(app.config["SESSION_COOKIE_SECURE"])
         self.assertTrue(app.config["SESSION_COOKIE_HTTPONLY"])
         self.assertEqual(app.config["SESSION_COOKIE_SAMESITE"], "Lax")
+
+    def test_production_rejects_missing_internal_proxy_token(self):
+        with self.assertRaisesRegex(RuntimeError, "INTERNAL_PROXY_TOKEN"):
+            create_app(
+                self.app_config(
+                    APP_ENV="production",
+                    SECRET_KEY="a-unique-production-secret-for-this-test",
+                    INTERNAL_PROXY_TOKEN=None,
+                )
+            )
+
+    def test_unknown_environment_fails_closed(self):
+        with self.assertRaisesRegex(RuntimeError, "APP_ENV"):
+            create_app(
+                self.app_config(
+                    APP_ENV="produciton",
+                    SECRET_KEY="a-unique-production-secret-for-this-test",
+                )
+            )
 
     def test_local_environment_keeps_development_fallback(self):
         app = create_app(self.app_config(SECRET_KEY=None))

@@ -4,6 +4,7 @@ from flask import current_app
 from openai import OpenAI
 
 from services.campaigns import clean_automated_outreach_body
+from services.email_addresses import normalize_email_subject
 from services.website_presence import is_website_absence_eligible, website_presence_summary
 
 
@@ -26,7 +27,7 @@ def _json_content(response):
     try:
         return json.loads(content)
     except json.JSONDecodeError as exc:
-        raise CampaignAIError(f"AI nevrátila platný JSON: {content[:500]}") from exc
+        raise CampaignAIError("AI nevrátila platný JSON.") from exc
 
 
 def _string_list(value, maximum=12):
@@ -120,9 +121,14 @@ Vráť iba čistý JSON:
     }
     if not profile["nace_keywords"] and not profile["company_keywords"]:
         raise CampaignAIError("AI nevytvorila použiteľné kľúčové slová pre výber firiem.")
+    subject_template = normalize_email_subject(
+        str(data.get("subject_template", "")).strip()
+    )
+    if subject_template is None:
+        raise CampaignAIError("AI nevytvorila bezpečný jednoradový predmet kampane.")
     return {
         "targeting_profile": profile,
-        "subject_template": str(data.get("subject_template", "")).strip()[:255],
+        "subject_template": subject_template,
         "body_template": clean_automated_outreach_body(
             data.get("body_template", ""),
             company_name="{company_name}",
@@ -237,12 +243,15 @@ Text nezačínaj pozdravom „Dobrý deň“, nepoužívaj v ňom názov firmy a
         if company_id not in valid_ids:
             continue
         company = companies_by_id[company_id]
+        subject = normalize_email_subject(str(item.get("subject", "")).strip())
+        if subject is None:
+            continue
         ranked.append(
             {
                 "company_id": company_id,
                 "fit_score": fit_score,
                 "fit_reason": str(item.get("fit_reason", "")).strip()[:1000],
-                "subject": str(item.get("subject", "")).strip()[:255],
+                "subject": subject,
                 "body": clean_automated_outreach_body(
                     item.get("body", ""),
                     company_name=company.official_name,

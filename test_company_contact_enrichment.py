@@ -75,7 +75,8 @@ class CompanyContactEnrichmentRouteTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn(b"Brave API offline", response.data)
+        self.assertNotIn(b"Brave API offline", response.data)
+        self.assertIn(b"serverovom logu", response.data)
 
 
 if __name__ == "__main__":

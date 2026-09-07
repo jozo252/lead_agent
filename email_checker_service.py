@@ -5,6 +5,8 @@ import re
 from email.header import decode_header
 from email.utils import parseaddr, parsedate_to_datetime
 
+from services.email_addresses import normalize_valid_email
+
 
 IMAP_SERVER = os.environ.get("IMAP_SERVER", "imap.gmail.com")
 IMAP_PORT = int(os.environ.get("IMAP_PORT", "993"))
@@ -74,7 +76,7 @@ def parse_inbox_message(msg):
 
     thread_message_ids = extract_thread_message_ids(msg)
     return {
-        "from_email": (from_email or from_header).strip().lower(),
+        "from_email": normalize_valid_email(from_email or from_header) or "",
         "from_name": from_name or None,
         "subject": decode_mime_words(msg.get("Subject", "")),
         "body": extract_text_from_email(msg).strip()[:20000],
@@ -127,6 +129,8 @@ def find_thread_email_ids(mail, message_ids):
     email_ids = set()
 
     for message_id in message_ids or []:
+        if not isinstance(message_id, str) or not re.fullmatch(r"<[^<>\s]+>", message_id):
+            continue
         for header in ("In-Reply-To", "References"):
             status, data = mail.search(
                 None,
@@ -153,6 +157,7 @@ def check_reply_from_sender(
     if not IMAP_USERNAME or not IMAP_PASSWORD:
         raise ValueError("Chýba IMAP_USERNAME alebo IMAP_PASSWORD v .env súbore.")
 
+    sender_email = normalize_valid_email(sender_email)
     if not sender_email:
         raise ValueError("Lead nemá email adresu.")
 

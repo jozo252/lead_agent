@@ -7,7 +7,7 @@ from datetime import date, datetime, timezone
 from difflib import SequenceMatcher
 from html import unescape
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 import requests
 from requests import Response
@@ -16,6 +16,7 @@ from urllib3.util.retry import Retry
 
 from extensions import db
 from models import Company, CompanyActivity, CompanyContact, CompanySource, SyncState
+from services.safe_http import SafeHttpError, normalize_http_url, safe_http_get
 import os
 from dotenv import load_dotenv
 from urllib.parse import urlparse
@@ -920,11 +921,11 @@ def normalize_search_results(raw_data):
 
         normalized.append({
             "title": result.get("title"),
-            "url": result.get("url"),
+            "url": normalize_http_url(result.get("url")),
             "description": result.get("description"),
             "extra_snippets": extra_snippets,
 
-            "location_url": location.get("url"),
+            "location_url": normalize_http_url(location.get("url")),
             "location_email": contact.get("email"),
             "location_phone": contact.get("telephone"),
 
@@ -1351,15 +1352,15 @@ def fetch_validated_website_result(company, candidate_url):
         return None
 
     try:
-        response = requests.get(
+        response = safe_http_get(
             candidate_url,
-            timeout=(5, 15),
+            timeout=15,
             headers={"User-Agent": "LeadAgent-ContactLookup/1.0"},
         )
-    except requests.RequestException:
+    except SafeHttpError:
         return None
 
-    if not response.ok:
+    if not 200 <= response.status_code < 300:
         return None
 
     visible_text = extract_visible_page_text(response.text)
@@ -2347,6 +2348,10 @@ def save_best_company_contacts(company, aggregated, include_candidates=True):
 
     for contact_type, selected_contact in selected_contacts.items():
         value = selected_contact["value"].strip()
+        if contact_type == "website":
+            value = normalize_http_url(value)
+            if not value:
+                continue
         contact = next(
             (
                 existing_contact
@@ -2390,7 +2395,9 @@ def save_best_company_contacts(company, aggregated, include_candidates=True):
             "brave_candidate",
             "brave_validated",
         }:
-            contact.source_url = selected_contact.get("source_url")
+            contact.source_url = normalize_http_url(
+                selected_contact.get("source_url")
+            )
             contact.label = selected_contact.get("reason")
             contact.confidence_score = selected_contact["confidence"]
             contact.source_type = (
@@ -2520,7 +2527,7 @@ def enrich_company_contacts(
             print(f"{count}. Spracovaná firma: {company.official_name}: {len(saved_contacts)} kontaktov")
             count += 1
             db.session.commit()
-        except Exception as exc:
+        except Exception:
             db.session.rollback()
             logger.exception(
                 "Nepodarilo sa doplniť kontakty pre IČO %s",
@@ -2528,7 +2535,7 @@ def enrich_company_contacts(
             )
             summary["errors"].append({
                 "ico": company.ico,
-                "error": str(exc),
+                "error": "Načítanie kontaktov zlyhalo. Podrobnosti sú v serverovom logu.",
             })
             continue
 
@@ -2584,7 +2591,30 @@ def extract_next_url(response: Response) -> str | None:
     if not url:
         return None
 
-    return urljoin(RPO_BASE_URL, url)
+    return normalize_rpo_api_url(url)
+
+
+def normalize_rpo_api_url(value: str) -> str:
+    """Allow only HTTPS URLs on the configured RPO API origin."""
+    try:
+        candidate = urljoin(f"{RPO_BASE_URL.rstrip('/')}/", str(value or "").strip())
+        parsed = urlsplit(candidate)
+        base = urlsplit(RPO_BASE_URL)
+        candidate_port = parsed.port or 443
+        base_port = base.port or 443
+    except (TypeError, ValueError) as exc:
+        raise RpoSyncError("RPO API vrátilo neplatnú URL.") from exc
+    if (
+        parsed.scheme.casefold() != "https"
+        or not parsed.hostname
+        or not base.hostname
+        or parsed.hostname.casefold() != base.hostname.casefold()
+        or candidate_port != base_port
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        raise RpoSyncError("RPO API sa pokúsilo presmerovať mimo povoleného originu.")
+    return candidate
 
 
 def extract_records(response_data: Any) -> list[dict[str, Any]]:
@@ -2623,10 +2653,20 @@ def request_page(
     session: requests.Session,
     url: str,
 ) -> Response:
-    response = session.get(
-        url,
-        timeout=(10, 60),
-    )
+    current_url = normalize_rpo_api_url(url)
+    response = None
+    for redirect_number in range(4):
+        response = session.get(
+            current_url,
+            timeout=(10, 60),
+            allow_redirects=False,
+        )
+        if response.status_code not in {301, 302, 303, 307, 308}:
+            break
+        location = response.headers.get("Location")
+        if not location or redirect_number == 3:
+            raise RpoSyncError("RPO API vrátilo neplatné alebo príliš dlhé presmerovanie.")
+        current_url = normalize_rpo_api_url(urljoin(current_url, location))
 
     if response.status_code == 429:
         raise RpoSyncError(
@@ -2634,12 +2674,7 @@ def request_page(
         )
 
     if not response.ok:
-        body_preview = response.text[:500]
-
-        raise RpoSyncError(
-            f"RPO API vrátilo HTTP {response.status_code}: "
-            f"{body_preview}"
-        )
+        raise RpoSyncError(f"RPO API vrátilo HTTP {response.status_code}.")
 
     return response
 
@@ -2660,7 +2695,7 @@ def fetch_record_detail(
             f"Záznam {record.get('id')} nemá resource_url."
         )
 
-    detail_url = urljoin(RPO_BASE_URL, resource_url)
+    detail_url = normalize_rpo_api_url(resource_url)
 
     response = request_page(session, detail_url)
 
@@ -3030,13 +3065,15 @@ def sync_rpo(
         # State získame znovu, pretože rollback mohol expirovať objekt.
         state = get_or_create_sync_state()
         state.status = "failed"
-        state.last_error = str(exc)[:5000]
+        state.last_error = (
+            "RPO synchronizácia zlyhala. Podrobnosti sú v serverovom logu."
+        )
 
         db.session.commit()
 
         logger.exception("RPO synchronizácia zlyhala.")
 
-        raise
+        raise RpoSyncError(state.last_error) from exc
 
     finally:
         session.close()

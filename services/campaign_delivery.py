@@ -1,13 +1,31 @@
 from datetime import datetime, timedelta, timezone
+import logging
 from uuid import uuid4
 
 from flask_mail import Message
-from sqlalchemy import or_, update
+from sqlalchemy import and_, func, or_, update
+from sqlalchemy.orm import aliased
 
 from extensions import db, mail
-from models import Campaign, CampaignRecipient, CampaignFollowUp, LeadActivity, OutboundEmail
-from services.campaigns import is_suppressed
+from models import (
+    Campaign,
+    CampaignFollowUp,
+    CampaignRecipient,
+    CompanyContact,
+    EmailReply,
+    Lead,
+    LeadActivity,
+    OutboundEmail,
+    Suppression,
+)
+from services.campaigns import (
+    company_suppression_value,
+    email_domain,
+    is_suppressed,
+    normalize_email,
+)
 from services.contact_selection import verified_contact_matches
+from services.email_addresses import normalize_email_subject, normalize_valid_email
 from services.crm import get_or_create_company_lead
 from services.sender_profiles import send_profile_message
 from services.campaign_readiness import campaign_delivery_issues
@@ -23,6 +41,7 @@ def naive_utcnow():
 
 
 DELIVERY_LOCK_TIMEOUT = timedelta(hours=1)
+logger = logging.getLogger(__name__)
 
 
 def sent_today_count(campaign):
@@ -106,14 +125,87 @@ def release_campaign_delivery_lock(campaign_id, token):
         return False
 
 
-def _claim_recipient(recipient_id):
-    """Reserve an approved row exactly once before making the external call."""
+def _claim_recipient(recipient_id, *, require_verified_contact=False):
+    """Reserve an eligible approved row exactly once before the external call."""
+    recipient = db.session.get(CampaignRecipient, recipient_id)
+    if recipient is None:
+        return None
+
+    address = normalize_email(recipient.recipient_email)
+    company_id = recipient.company_id
+    contact_id = recipient.contact_id
+    suppression_clauses = [
+        and_(Suppression.scope == "email", Suppression.value == address),
+        and_(
+            Suppression.scope == "company",
+            Suppression.value == company_suppression_value(recipient.company),
+        ),
+    ]
+    domain = email_domain(address)
+    if domain:
+        suppression_clauses.append(
+            and_(Suppression.scope == "domain", Suppression.value == domain)
+        )
+    suppressed = db.session.query(Suppression.id).filter(
+        or_(*suppression_clauses)
+    ).exists()
+    has_reply = db.session.query(EmailReply.id).filter(
+        EmailReply.campaign_recipient_id == recipient_id
+    ).exists()
+    conditions = [
+        CampaignRecipient.id == recipient_id,
+        CampaignRecipient.status == "approved",
+        CampaignRecipient.replied_at.is_(None),
+        CampaignRecipient.company_id == company_id,
+        CampaignRecipient.recipient_email == recipient.recipient_email,
+        ~has_reply,
+        ~suppressed,
+    ]
+    cooldown_days = max(0, int(recipient.campaign.contact_cooldown_days or 0))
+    if cooldown_days:
+        previous_recipient = aliased(CampaignRecipient)
+        cooldown_since_aware = utcnow() - timedelta(days=cooldown_days)
+        cooldown_since_naive = cooldown_since_aware.replace(tzinfo=None)
+        same_target = or_(
+            previous_recipient.company_id == company_id,
+            func.lower(func.trim(previous_recipient.recipient_email)) == address,
+        )
+        recent_campaign_attempt = db.session.query(previous_recipient.id).filter(
+            previous_recipient.id != recipient_id,
+            same_target,
+            or_(
+                previous_recipient.sent_at >= cooldown_since_aware,
+                previous_recipient.sending_started_at >= cooldown_since_aware,
+            ),
+        ).exists()
+        recent_legacy_outbound = db.session.query(OutboundEmail.id).join(Lead).filter(
+            or_(
+                Lead.company_id == company_id,
+                func.lower(func.trim(OutboundEmail.recipient)) == address,
+            ),
+            OutboundEmail.sent_at >= cooldown_since_naive,
+        ).exists()
+        conditions.extend((~recent_campaign_attempt, ~recent_legacy_outbound))
+    if contact_id is not None:
+        valid_contact = db.session.query(CompanyContact.id).filter(
+            CompanyContact.id == contact_id,
+            CompanyContact.company_id == company_id,
+            func.lower(func.trim(CompanyContact.contact_type)) == "email",
+            func.lower(func.trim(CompanyContact.value)) == address,
+        )
+        if require_verified_contact:
+            valid_contact = valid_contact.filter(
+                CompanyContact.is_verified.is_(True)
+            )
+        conditions.extend(
+            (CampaignRecipient.contact_id == contact_id, valid_contact.exists())
+        )
+    elif require_verified_contact:
+        return None
+
     result = db.session.execute(
         update(CampaignRecipient)
-        .where(
-            CampaignRecipient.id == recipient_id,
-            CampaignRecipient.status == "approved",
-        )
+        .where(*conditions)
         .values(
             status="sending",
             sending_started_at=utcnow(),
@@ -241,7 +333,23 @@ def _send_campaign_recipients_locked(campaign, requested, lock_token):
                 result["suppressed"] += 1
             continue
 
-        recipient = _claim_recipient(recipient.id)
+        safe_subject = normalize_email_subject(recipient.subject)
+        safe_address = normalize_valid_email(recipient.recipient_email)
+        if safe_subject is None or safe_address is None:
+            recipient.status = "failed"
+            recipient.last_error = "Predmet alebo adresa príjemcu nie sú platné."
+            db.session.commit()
+            result["failed"] += 1
+            continue
+        recipient.subject = safe_subject
+        recipient.recipient_email = safe_address
+
+        recipient = _claim_recipient(
+            recipient.id,
+            require_verified_contact=(
+                campaign.automation_enabled or campaign.follow_up_enabled
+            ),
+        )
         if recipient is None:
             continue
         sent_externally = False
@@ -296,7 +404,8 @@ def _send_campaign_recipients_locked(campaign, requested, lock_token):
             schedule_campaign_followup(campaign, recipient, outbound)
             db.session.commit()
             result["sent"] += 1
-        except Exception as exc:
+        except Exception:
+            logger.exception("Campaign recipient delivery failed")
             db.session.rollback()
             recipient = db.session.get(CampaignRecipient, recipient.id)
             # A timeout may occur after SMTP accepted DATA. Explicit-profile
@@ -307,7 +416,7 @@ def _send_campaign_recipients_locked(campaign, requested, lock_token):
                 "Výsledok odoslania nie je potvrdený. E-mail mohol byť odoslaný; "
                 "pred akýmkoľvek opakovaním skontroluj schránku a históriu."
                 if uncertain
-                else str(exc)[:1000]
+                else "Odoslanie zlyhalo pred potvrdením SMTP; skontroluj nastavenie odosielania."
             )
             db.session.commit()
             result["failed"] += 1

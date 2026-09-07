@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from datetime import datetime, timezone
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
@@ -10,6 +11,9 @@ from sqlalchemy.exc import IntegrityError
 
 from extensions import db
 from models import Campaign, Opportunity, ScoutRun
+
+
+logger = logging.getLogger(__name__)
 
 
 BRAVE_WEB_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
@@ -275,12 +279,16 @@ def run_campaign_scout(campaign, *, search=brave_web_search, now=None):
             "discovered": discovered,
             "refreshed": refreshed,
         }
-    except Exception as exc:
+    except Exception:
+        logger.exception(
+            "Campaign scout failed",
+            extra={"campaign_id": campaign.id, "scout_run_id": run.id},
+        )
         db.session.rollback()
         stored_run = db.session.get(ScoutRun, run.id)
         stored_campaign = db.session.get(Campaign, campaign.id)
         stored_run.status = "failed"
-        stored_run.error = str(exc)[:1000]
+        stored_run.error = "Lov sa nepodarilo dokončiť. Podrobnosti sú v serverovom logu."
         stored_run.finished_at = utcnow()
         stored_campaign.last_scout_error = stored_run.error
         db.session.commit()

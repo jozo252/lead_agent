@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from flask import Blueprint, flash, redirect, render_template, request, url_for
+from flask import Blueprint, current_app, flash, redirect, render_template, request, url_for
 from sqlalchemy import func
 
 from extensions import db
@@ -32,6 +32,7 @@ from services.campaigns import (
     render_campaign_template,
 )
 from services.contact_selection import verified_contact_matches
+from services.email_addresses import normalize_email_subject
 from services.company_filtering import (
     company_filters_from_source,
     filtered_companies_query,
@@ -175,7 +176,9 @@ def new_campaign():
         flash("Zapnutý lovec potrebuje aspoň jeden vyhľadávací dotaz.", "error")
     elif not offer_description:
         flash("Stručne opíš, čo ponúkaš alebo hľadáš.", "error")
-    elif not automation_enabled and (not subject_template or len(subject_template) > 255):
+    elif subject_template and normalize_email_subject(subject_template) is None:
+        flash("Predmet musí byť jeden platný riadok s najviac 255 znakmi.", "error")
+    elif not automation_enabled and not subject_template:
         flash("Predmet je povinný a môže mať najviac 255 znakov.", "error")
     elif not automation_enabled and not body_template:
         flash("Text kampane nemôže byť prázdny.", "error")
@@ -201,8 +204,9 @@ def new_campaign():
                     target_hint=target_hint,
                     campaign_name=name,
                 )
-            except CampaignAIError as exc:
-                flash(str(exc), "error")
+            except CampaignAIError:
+                current_app.logger.exception("Campaign plan generation failed")
+                flash("AI plán kampane sa nepodarilo bezpečne vytvoriť.", "error")
                 return render_template(
                     "campaign_form.html",
                     offer_types=OFFER_TYPES,
@@ -217,7 +221,7 @@ def new_campaign():
                 body_template,
                 company_name="{company_name}",
             )
-            if not subject_template or not body_template:
+            if normalize_email_subject(subject_template) is None or not body_template:
                 flash("AI nepripravila použiteľný predmet a text kampane.", "error")
                 return render_template(
                     "campaign_form.html",
@@ -226,6 +230,17 @@ def new_campaign():
                     business_lines=BUSINESS_LINES,
                     form=request.form,
                 )
+
+        subject_template = normalize_email_subject(subject_template)
+        if subject_template is None:
+            flash("Predmet musí byť jeden platný riadok s najviac 255 znakmi.", "error")
+            return render_template(
+                "campaign_form.html",
+                offer_types=OFFER_TYPES,
+                offer_stages=OFFER_STAGES,
+                business_lines=BUSINESS_LINES,
+                form=request.form,
+            )
 
         if offer_stage == "validation":
             body_template = ensure_validation_disclosure(body_template)
@@ -385,9 +400,10 @@ def convert_opportunity(campaign_id, opportunity_id):
     except ValueError as exc:
         db.session.rollback()
         flash(str(exc), "error")
-    except Exception as exc:
+    except Exception:
+        current_app.logger.exception("Opportunity conversion failed")
         db.session.rollback()
-        flash(f"CRM lead sa nepodarilo vytvoriť: {exc}", "error")
+        flash("CRM lead sa nepodarilo vytvoriť. Podrobnosti sú v serverovom logu.", "error")
     return redirect(url_for("campaigns.campaign_detail", campaign_id=campaign_id))
 
 
@@ -476,9 +492,10 @@ def select_automatic_companies(campaign_id):
             requested,
             recipient_status="draft",
         )
-    except Exception as exc:
+    except Exception:
+        current_app.logger.exception("Automated recipient preparation failed")
         db.session.rollback()
-        flash(f"Automatický výber firiem zlyhal: {str(exc)[:300]}", "error")
+        flash("Automatický výber firiem zlyhal. Nič sa neodoslalo.", "error")
         return redirect(url_for("campaigns.campaign_detail", campaign_id=campaign.id))
 
     if result["prepared"]:
@@ -540,8 +557,9 @@ def regenerate_automatic_targeting(campaign_id):
             target_hint=target_hint,
             campaign_name=campaign.name,
         )
-    except CampaignAIError as exc:
-        flash(f"Regenerovanie zacielenia zlyhalo: {exc}", "error")
+    except CampaignAIError:
+        current_app.logger.exception("Campaign targeting regeneration failed")
+        flash("Regenerovanie AI zacielenia zlyhalo.", "error")
         return redirect(url_for("campaigns.campaign_detail", campaign_id=campaign.id))
 
     campaign.targeting_profile = plan["targeting_profile"]
@@ -565,9 +583,11 @@ def update_automation_settings(campaign_id):
         flash("Pred úpravou automatickú kampaň pozastav.", "error")
         return redirect(url_for("campaigns.campaign_detail", campaign_id=campaign.id))
 
-    subject_template = request.form.get("subject_template", "").strip()
+    subject_template = normalize_email_subject(
+        request.form.get("subject_template", "")
+    )
     body_template = request.form.get("body_template", "").strip()
-    if not subject_template or len(subject_template) > 255 or not body_template:
+    if not subject_template or not body_template:
         flash("Predmet a text sú povinné; predmet môže mať najviac 255 znakov.", "error")
         return redirect(url_for("campaigns.campaign_detail", campaign_id=campaign.id))
 
@@ -764,10 +784,10 @@ def _update_recipient_locked(campaign_id, recipient_id):
         flash("Odoslaný alebo neistý e-mail nemožno prepísať ani znovu schváliť. Najprv over odoslanú poštu.", "error")
         return redirect(url_for("campaigns.campaign_detail", campaign_id=campaign_id))
 
-    subject = request.form.get("subject", "").strip()
+    subject = normalize_email_subject(request.form.get("subject", ""))
     body = request.form.get("body", "").strip()
     action = request.form.get("action", "save")
-    if not subject or len(subject) > 255 or not body:
+    if not subject or not body:
         flash("Predmet aj text sú povinné; predmet môže mať najviac 255 znakov.", "error")
         return redirect(url_for("campaigns.campaign_detail", campaign_id=campaign_id))
 
@@ -858,9 +878,10 @@ def sync_recipient_hubspot(campaign_id, recipient_id):
         sync_lead_to_hubspot(lead)
         db.session.commit()
         flash("Firma a kontakt boli synchronizované do HubSpotu.", "success")
-    except HubSpotError as exc:
+    except HubSpotError:
+        current_app.logger.exception("HubSpot campaign synchronization failed")
         db.session.rollback()
-        flash(f"HubSpot synchronizácia zlyhala: {exc}", "error")
+        flash("HubSpot synchronizácia zlyhala. Podrobnosti sú v serverovom logu.", "error")
 
     return redirect(url_for("campaigns.campaign_detail", campaign_id=campaign_id))
 

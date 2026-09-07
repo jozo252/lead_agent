@@ -86,6 +86,9 @@ class CampaignOptOutTests(unittest.TestCase):
             "Prosím odhlásiť ma.",
             "Nemám záujem, už ma nekontaktujte.",
             "Dobrý deň, prosím neposielajte mi ďalšie e-maily. Ďakujem.",
+            "Prosím vymažte môj email z vašej databázy.",
+            "Odstráňte ma zo zoznamu kontaktov.",
+            "Odhlásiť.",
         ):
             with self.subTest(body=body):
                 self.assertTrue(is_explicit_opt_out_reply(body))

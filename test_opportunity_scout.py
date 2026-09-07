@@ -151,8 +151,15 @@ class OpportunityScoutTests(unittest.TestCase):
         second = run_campaign_scout(campaign, search=search, now=self.now)
 
         self.assertIn("error", first)
+        self.assertNotIn("search timeout", first["error"])
+        self.assertEqual(
+            first["error"],
+            "Lov sa nepodarilo dokončiť. Podrobnosti sú v serverovom logu.",
+        )
         self.assertIn("skipped", second)
-        self.assertEqual(ScoutRun.query.one().status, "failed")
+        stored_run = ScoutRun.query.one()
+        self.assertEqual(stored_run.status, "failed")
+        self.assertNotIn("search timeout", stored_run.error)
         self.assertEqual(Opportunity.query.count(), 0)
         self.assertEqual(search.call_count, 1)
 

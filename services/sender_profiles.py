@@ -22,6 +22,7 @@ from email_checker_service import parse_inbox_message
 from extensions import db, mail
 from models import OutboundEmail, SenderProfile
 from services.campaigns import OPT_OUT_FOOTER
+from services.email_addresses import normalize_email_subject, normalize_valid_email
 
 
 NETWORK_TIMEOUT_SECONDS = 30
@@ -31,7 +32,6 @@ SETTING_NAMES = (
     "IMAP_USERNAME", "IMAP_PASSWORD",
 )
 CONFIG_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,39}$")
-ADDRESS_RE = re.compile(r"^[^@\s<>]+@[^@\s<>]+$")
 MONTH_NAMES = (
     "Jan", "Feb", "Mar", "Apr", "May", "Jun",
     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
@@ -133,7 +133,7 @@ def _identity_issues(profile):
     address = str(getattr(profile, "sender_email", "") or "").strip()
     if not name or "\r" in name or "\n" in name:
         issues.append("Chýba platné meno odosielateľa.")
-    if not ADDRESS_RE.fullmatch(address):
+    if not normalize_valid_email(address):
         issues.append("Chýba platný e-mail odosielateľa.")
     return issues
 
@@ -249,30 +249,54 @@ def send_profile_message(message, profile=None):
     A transport exception has an uncertain delivery outcome and must not be
     retried automatically. The caller is responsible for a persisted send claim.
     """
+    if profile is not None:
+        issues = profile_readiness(profile)
+        if issues:
+            raise SenderProfileError(" ".join(issues))
+        settings = _profile_settings(profile)
+        use_ssl = _boolean(settings.get("MAIL_USE_SSL"))
+        settings = {
+            **settings,
+            "MAIL_PORT": _port(settings.get("MAIL_PORT"), 465 if use_ssl else 587),
+            "MAIL_USE_SSL": use_ssl,
+            "MAIL_USE_TLS": _boolean(settings.get("MAIL_USE_TLS"), default=not use_ssl),
+            "MAIL_SUPPRESS_SEND": current_app.config.get("MAIL_SUPPRESS_SEND", current_app.testing),
+            "MAIL_DEBUG": False,
+        }
+        message.sender = (profile.sender_name.strip(), profile.sender_email.strip())
+        message.reply_to = profile.sender_email.strip()
+        if message.extra_headers:
+            message.extra_headers = {
+                key: value for key, value in message.extra_headers.items()
+                if key.lower() not in {"from", "sender", "reply-to"}
+            }
+        message.body = append_profile_signature(message.body, profile.signature)
+        message.html = _append_html_signature(message.html, profile.signature)
+
+    safe_subject = normalize_email_subject(message.subject)
+    if safe_subject is None:
+        raise SenderProfileError("Predmet e-mailu musí byť jeden platný riadok.")
+    message.subject = safe_subject
+    for field in ("recipients", "cc", "bcc"):
+        addresses = getattr(message, field, None) or []
+        normalized = [normalize_valid_email(address) for address in addresses]
+        if any(address is None for address in normalized):
+            raise SenderProfileError("E-mail obsahuje neplatnú adresu príjemcu.")
+        setattr(message, field, normalized)
+    if message.reply_to:
+        reply_to = normalize_valid_email(message.reply_to)
+        if not reply_to:
+            raise SenderProfileError("E-mail obsahuje neplatnú Reply-To adresu.")
+        message.reply_to = reply_to
+    for name, value in (message.extra_headers or {}).items():
+        if (
+            not re.fullmatch(r"[A-Za-z0-9!#$%&'*+.^_`|~-]+", str(name))
+            or any(character in str(value) for character in "\r\n")
+        ):
+            raise SenderProfileError("E-mail obsahuje neplatnú doplnkovú hlavičku.")
+
     if profile is None:
         return mail.send(message)
-    issues = profile_readiness(profile)
-    if issues:
-        raise SenderProfileError(" ".join(issues))
-    settings = _profile_settings(profile)
-    use_ssl = _boolean(settings.get("MAIL_USE_SSL"))
-    settings = {
-        **settings,
-        "MAIL_PORT": _port(settings.get("MAIL_PORT"), 465 if use_ssl else 587),
-        "MAIL_USE_SSL": use_ssl,
-        "MAIL_USE_TLS": _boolean(settings.get("MAIL_USE_TLS"), default=not use_ssl),
-        "MAIL_SUPPRESS_SEND": current_app.config.get("MAIL_SUPPRESS_SEND", current_app.testing),
-        "MAIL_DEBUG": False,
-    }
-    message.sender = (profile.sender_name.strip(), profile.sender_email.strip())
-    message.reply_to = profile.sender_email.strip()
-    if message.extra_headers:
-        message.extra_headers = {
-            key: value for key, value in message.extra_headers.items()
-            if key.lower() not in {"from", "sender", "reply-to"}
-        }
-    message.body = append_profile_signature(message.body, profile.signature)
-    message.html = _append_html_signature(message.html, profile.signature)
     try:
         state = Mail().init_mail(settings)
         with _TimedProfileConnection(state) as connection:
@@ -333,8 +357,10 @@ def _parse_profile_message(raw):
     if any(part.defects for part in message.walk()):
         raise SenderProfileError("IMAP správu sa nepodarilo úplne spracovať.")
     result = parse_inbox_message(message)
-    if not ADDRESS_RE.fullmatch(result.get("from_email", "")):
+    sender_address = normalize_valid_email(result.get("from_email", ""))
+    if not sender_address:
         raise SenderProfileError("IMAP správa nemá platného odosielateľa.")
+    result["from_email"] = sender_address
     # Missing or unusable Date must remain in the result for conservative review.
     result["received_at"] = None
     try:

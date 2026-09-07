@@ -270,6 +270,27 @@ class CampaignWorkflowIntegrationTests(unittest.TestCase):
         self.assertIsNone(self.campaign.follow_up_approved_at)
         self.assertIsNone(self.original.lead.next_follow_up_at)
 
+    def test_signature_change_revokes_unsent_recipient_approval(self):
+        self.setup_ready_recipient()
+
+        self.client.post(f"/sender-profiles/{self.profile.id}", data={
+            "sender_email": self.profile.sender_email,
+            "sender_name": self.profile.sender_name,
+            "signature": "Nový schválený podpis",
+            "enabled": "on",
+        })
+
+        db.session.refresh(self.recipient)
+        self.assertEqual(self.recipient.status, "draft")
+        self.assertIsNone(self.recipient.approved_at)
+        self.assertIn("nové schválenie", self.recipient.last_error)
+        with mail.record_messages() as messages:
+            self.client.post(
+                f"/campaigns/{self.campaign.id}/send",
+                data={"batch_size": "1"},
+            )
+        self.assertEqual(messages, [])
+
     def test_historical_sender_email_cannot_be_changed(self):
         self.setup_ready_recipient()
         self.send_first()
@@ -315,6 +336,23 @@ class CampaignWorkflowIntegrationTests(unittest.TestCase):
         self.assertEqual(self.original.sender_profile_id, self.profile.id)
         self.assertEqual(self.followup.sender_profile_id, self.profile.id)
         self.assertEqual(self.followup.status, "cancelled")
+
+    def test_profile_switch_revokes_unsent_recipient_approval(self):
+        self.setup_ready_recipient()
+
+        self.configure_campaign(sender_profile_id=str(self.other_profile.id))
+
+        db.session.refresh(self.recipient)
+        self.assertEqual(self.campaign.sender_profile_id, self.other_profile.id)
+        self.assertEqual(self.recipient.status, "draft")
+        self.assertIsNone(self.recipient.approved_at)
+        self.assertIn("nové schválenie", self.recipient.last_error)
+        with mail.record_messages() as messages:
+            self.client.post(
+                f"/campaigns/{self.campaign.id}/send",
+                data={"batch_size": "1"},
+            )
+        self.assertEqual(messages, [])
 
     def test_active_or_busy_campaign_settings_cannot_change(self):
         self.create_campaign()

@@ -190,6 +190,19 @@ class SafeHttpTests(unittest.TestCase):
 
     @patch("services.safe_http._PinnedHTTPSConnection", FakeConnection)
     @patch("services.safe_http.socket.getaddrinfo")
+    @patch(
+        "services.safe_http.time.monotonic",
+        side_effect=[0.0, 0.0, 0.0, 0.0, 2.0],
+    )
+    def test_deadline_is_checked_after_eof_read(self, _clock, resolve):
+        resolve.return_value = [(2, 1, 6, "", ("93.184.216.34", 443))]
+        FakeConnection.responses = [FakeResponse(body=b"")]
+
+        with self.assertRaisesRegex(SafeHttpError, "celkový časový limit"):
+            safe_http_get("https://example.com/", timeout=1)
+
+    @patch("services.safe_http._PinnedHTTPSConnection", FakeConnection)
+    @patch("services.safe_http.socket.getaddrinfo")
     def test_oversize_and_binary_responses_are_rejected(self, resolve):
         resolve.return_value = [(2, 1, 6, "", ("93.184.216.34", 443))]
         for response in (

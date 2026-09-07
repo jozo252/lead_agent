@@ -313,6 +313,7 @@ def safe_http_get(
                 if getattr(connection, "sock", None) is not None:
                     connection.sock.settimeout(remaining_timeout())
                 response.read(1)
+                remaining_timeout()
                 if not location:
                     raise SafeHttpError("Presmerovanie nemá cieľovú URL.")
                 if redirect_number >= max_redirects:
@@ -333,10 +334,10 @@ def safe_http_get(
                 amount = min(64 * 1024, max_bytes + 1 - len(payload))
                 read_chunk = getattr(response, "read1", response.read)
                 chunk = read_chunk(amount)
+                remaining_timeout()
                 if not chunk:
                     break
                 payload.extend(chunk)
-                remaining_timeout()
             if len(payload) > max_bytes:
                 raise SafeHttpError("Web prekročil povolenú veľkosť odpovede.")
             charset = response.headers.get_content_charset() or "utf-8"

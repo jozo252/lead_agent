@@ -161,6 +161,16 @@ class ProductionSecretConfigTests(unittest.TestCase):
                 )
             )
 
+    @patch.dict(os.environ, {}, clear=True)
+    def test_missing_environment_fails_closed_outside_tests(self):
+        with self.assertRaisesRegex(RuntimeError, "APP_ENV"):
+            create_app({
+                "TESTING": False,
+                "APP_ENV": None,
+                "SECRET_KEY": "a-unique-production-secret-for-this-test",
+                "SQLALCHEMY_DATABASE_URI": "sqlite://",
+            })
+
     def test_local_environment_keeps_development_fallback(self):
         app = create_app(self.app_config(SECRET_KEY=None))
 

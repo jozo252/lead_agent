@@ -8,6 +8,7 @@ and validated again. Responses are streamed into a bounded buffer.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 import http.client
 import ipaddress
 import socket
@@ -22,11 +23,17 @@ ALLOWED_PORTS = {80, 443}
 REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 DEFAULT_MAX_BYTES = 1_000_000
 DEFAULT_MAX_REDIRECTS = 5
+DNS_WORKERS = 4
 ALLOWED_CONTENT_TYPES = {
     "text/html",
     "application/xhtml+xml",
     "text/plain",
 }
+_DNS_EXECUTOR = ThreadPoolExecutor(
+    max_workers=DNS_WORKERS,
+    thread_name_prefix="lead-agent-dns",
+)
+_DNS_SLOTS = threading.BoundedSemaphore(DNS_WORKERS)
 
 
 class SafeHttpError(RuntimeError):
@@ -182,7 +189,28 @@ class _DeadlineWatchdog:
         self.timer.cancel()
 
 
-def _validated_target(url):
+def _resolve_addresses(hostname, port, timeout):
+    if not _DNS_SLOTS.acquire(timeout=timeout):
+        raise SafeHttpError("DNS preklad prekročil celkový časový limit.")
+    try:
+        future = _DNS_EXECUTOR.submit(
+            socket.getaddrinfo,
+            hostname,
+            port,
+            type=socket.SOCK_STREAM,
+        )
+    except Exception:
+        _DNS_SLOTS.release()
+        raise
+    future.add_done_callback(lambda _future: _DNS_SLOTS.release())
+    try:
+        return future.result(timeout=timeout)
+    except FutureTimeoutError as exc:
+        future.cancel()
+        raise SafeHttpError("DNS preklad prekročil celkový časový limit.") from exc
+
+
+def _validated_target(url, *, timeout):
     try:
         parsed = urlsplit(str(url or "").strip())
         port = parsed.port
@@ -208,11 +236,7 @@ def _validated_target(url):
     try:
         resolved = {
             ipaddress.ip_address(item[4][0])
-            for item in socket.getaddrinfo(
-                hostname,
-                port,
-                type=socket.SOCK_STREAM,
-            )
+            for item in _resolve_addresses(hostname, port, timeout)
         }
     except (OSError, ValueError) as exc:
         raise SafeHttpError("Webovú adresu sa nepodarilo bezpečne preložiť.") from exc
@@ -271,7 +295,10 @@ def safe_http_get(
         return max(0.1, remaining)
 
     for redirect_number in range(max_redirects + 1):
-        scheme, hostname, port, connect_ip, target, normalized_url = _validated_target(current_url)
+        scheme, hostname, port, connect_ip, target, normalized_url = _validated_target(
+            current_url,
+            timeout=remaining_timeout(),
+        )
         request_timeout = remaining_timeout()
         connection_class = _PinnedHTTPSConnection if scheme == "https" else _PinnedHTTPConnection
         connection = connection_class(hostname, connect_ip, port, request_timeout)

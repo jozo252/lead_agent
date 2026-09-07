@@ -3,7 +3,7 @@ import time
 from pprint import pprint
 from types import SimpleNamespace
 
-from app import app
+from app import create_app
 from extensions import db
 from models import Company
 from services.rpo_sync import (
@@ -144,6 +144,7 @@ def process_company(company, queries, delay_seconds):
 
 
 def main():
+    app = create_app()
     parser = argparse.ArgumentParser(
         description="Test vyhľadania a filtrovania firemných kontaktov cez Brave.",
     )

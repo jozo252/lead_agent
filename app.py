@@ -155,7 +155,7 @@ def create_app(config=None):
 
     app.config["APP_ENV"] = os.environ.get(
         "APP_ENV",
-        os.environ.get("FLASK_ENV", "development"),
+        os.environ.get("FLASK_ENV"),
     )
     app.config["SECRET_KEY"] = (
         os.environ.get("SECRET_KEY") or DEFAULT_DEVELOPMENT_SECRET_KEY
@@ -208,6 +208,8 @@ def create_app(config=None):
     )
     if config:
         app.config.update(config)
+    if not app.config.get("APP_ENV") and app.config.get("TESTING") is True:
+        app.config["APP_ENV"] = "testing"
     _validate_secret_key_config(app)
     _configure_request_security(app)
     _register_internal_proxy_guard(app)
@@ -245,8 +247,5 @@ def create_app(config=None):
     return app
 
 
-app = create_app()
-
-
 if __name__ == "__main__":
-    app.run(debug=False)
+    create_app().run(debug=False)

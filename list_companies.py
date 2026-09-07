@@ -1,8 +1,9 @@
-from app import app
+from app import create_app
 from models import Company
 
 
 def main():
+    app = create_app()
     with app.app_context():
         companies = Company.query.order_by(Company.ico).all()
 

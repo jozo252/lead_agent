@@ -1,4 +1,5 @@
 import unittest
+import time
 from email.message import Message
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -82,6 +83,20 @@ class SafeHttpTests(unittest.TestCase):
         ):
             with self.subTest(url=url), self.assertRaises(SafeHttpError):
                 safe_http_get(url)
+
+    @patch("services.safe_http.socket.getaddrinfo")
+    def test_dns_resolution_is_bounded_by_total_timeout(self, resolve):
+        def delayed_resolution(*_args, **_kwargs):
+            time.sleep(0.5)
+            return [(2, 1, 6, "", ("93.184.216.34", 443))]
+
+        resolve.side_effect = delayed_resolution
+        started = time.monotonic()
+        with self.assertRaisesRegex(SafeHttpError, "DNS preklad"):
+            safe_http_get("https://slow-dns.example/", timeout=0.05)
+        elapsed = time.monotonic() - started
+
+        self.assertLess(elapsed, 0.3)
 
     def test_link_normalizer_allows_only_canonical_public_http_urls(self):
         self.assertEqual(

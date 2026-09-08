@@ -115,10 +115,28 @@ class RpoSoleTraderTargetFocusTests(unittest.TestCase):
 
         self.assertTrue(matches_target_sole_trader_focus(record))
 
-    def test_rejects_low_signal_site_preparation_nace(self):
+    def test_accepts_site_preparation_nace(self):
         record = {
             "statisticalCodes": {
                 "mainActivity": {"code": "43.12"},
+            },
+        }
+
+        self.assertTrue(matches_target_sole_trader_focus(record))
+
+    def test_accepts_building_finishing_nace(self):
+        record = {
+            "statisticalCodes": {
+                "mainActivity": {"code": "43.35"},
+            },
+        }
+
+        self.assertTrue(matches_target_sole_trader_focus(record))
+
+    def test_rejects_unselected_specialized_construction_nace(self):
+        record = {
+            "statisticalCodes": {
+                "mainActivity": {"code": "43.99"},
             },
         }
 

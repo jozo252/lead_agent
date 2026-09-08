@@ -605,6 +605,8 @@ TARGET_SOLE_TRADER_NACE_PREFIXES = (
     "27",  # výroba elektrických zariadení
     "41",  # výstavba budov
     "42",  # inžinierske stavby
+    "431",  # demolácie a príprava staveniska
+    "433",  # kompletizácia a dokončovacie práce
 )
 
 TARGET_SOLE_TRADER_NACE_CODES = {

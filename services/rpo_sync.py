@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import gzip
+import io
 import json
 import logging
 import time
@@ -29,6 +31,10 @@ load_dotenv()
 RPO_BASE_URL = "https://datahub.ekosystem.slovensko.digital"
 RPO_SYNC_URL = (
     f"{RPO_BASE_URL}/api/data/rpo2/organizations/sync"
+)
+RPO_EXPORT_BASE_URL = (
+    "https://frkqbrydxwdp.compat.objectstorage.eu-frankfurt-1."
+    "oraclecloud.com/susr-rpo/batch-init"
 )
 
 SYNC_NAME = "rpo2_organizations"
@@ -591,14 +597,26 @@ SRO_LEGAL_FORMS = {
     "s. r. o.",
 }
 
+TRADE_REGISTER_NAMES = {
+    "živnostenský register",
+}
+
+
+def normalize_rpo_label(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+
+    return " ".join(value.casefold().split())
+
 
 def is_sro_legal_form(legal_form: Any) -> bool:
     """Vráti True iba pre právnu formu spoločnosti s ručením obmedzeným."""
-    if not isinstance(legal_form, str):
-        return False
+    return normalize_rpo_label(legal_form) in SRO_LEGAL_FORMS
 
-    normalized = " ".join(legal_form.casefold().split())
-    return normalized in SRO_LEGAL_FORMS
+
+def is_trade_register(source_register: Any) -> bool:
+    """Vráti True pre záznamy zo Živnostenského registra."""
+    return normalize_rpo_label(source_register) in TRADE_REGISTER_NAMES
 
 
 def should_skip_record(normalized):
@@ -616,7 +634,12 @@ def should_skip_rpo_record(normalized, source_register=None):
     if source_register in IGNORED_RPO_REGISTERS:
         return True
 
-    if not is_sro_legal_form(normalized.get("legal_form")):
+    is_supported_record = (
+        is_sro_legal_form(normalized.get("legal_form"))
+        or is_trade_register(source_register)
+    )
+
+    if not is_supported_record:
         return True
 
     return should_skip_record(normalized)
@@ -2655,18 +2678,46 @@ def request_page(
 ) -> Response:
     current_url = normalize_rpo_api_url(url)
     response = None
-    for redirect_number in range(4):
-        response = session.get(
-            current_url,
-            timeout=(10, 60),
-            allow_redirects=False,
-        )
-        if response.status_code not in {301, 302, 303, 307, 308}:
+    transient_errors = (
+        requests.exceptions.ChunkedEncodingError,
+        requests.exceptions.ConnectionError,
+        requests.exceptions.Timeout,
+    )
+
+    for request_attempt in range(3):
+        try:
+            for redirect_number in range(4):
+                response = session.get(
+                    current_url,
+                    timeout=(10, 60),
+                    allow_redirects=False,
+                )
+                if response.status_code not in {301, 302, 303, 307, 308}:
+                    break
+                location = response.headers.get("Location")
+                if not location or redirect_number == 3:
+                    raise RpoSyncError(
+                        "RPO API vrátilo neplatné alebo príliš dlhé presmerovanie."
+                    )
+                current_url = normalize_rpo_api_url(
+                    urljoin(current_url, location)
+                )
             break
-        location = response.headers.get("Location")
-        if not location or redirect_number == 3:
-            raise RpoSyncError("RPO API vrátilo neplatné alebo príliš dlhé presmerovanie.")
-        current_url = normalize_rpo_api_url(urljoin(current_url, location))
+        except transient_errors as exc:
+            if request_attempt == 2:
+                raise RpoSyncError(
+                    "RPO API opakovane prerušilo spojenie počas načítania stránky."
+                ) from exc
+
+            wait_seconds = 2 ** request_attempt
+            logger.warning(
+                "RPO request interrupted; retry=%s wait=%ss url=%s error=%s",
+                request_attempt + 1,
+                wait_seconds,
+                current_url,
+                type(exc).__name__,
+            )
+            time.sleep(wait_seconds)
 
     if response.status_code == 429:
         raise RpoSyncError(
@@ -2677,6 +2728,127 @@ def request_page(
         raise RpoSyncError(f"RPO API vrátilo HTTP {response.status_code}.")
 
     return response
+
+
+def build_rpo_export_url(batch_date: str, file_number: int) -> str:
+    """Build a fixed-origin URL for one official monthly RPO export file."""
+
+    try:
+        normalized_date = date.fromisoformat(batch_date).isoformat()
+    except (TypeError, ValueError) as exc:
+        raise RpoSyncError("Neplatný dátum RPO exportu.") from exc
+
+    if not isinstance(file_number, int) or not 1 <= file_number <= 999:
+        raise RpoSyncError("Neplatné číslo súboru RPO exportu.")
+
+    return (
+        f"{RPO_EXPORT_BASE_URL}/"
+        f"init_{normalized_date}_{file_number:03d}.json.gz"
+    )
+
+
+def iter_rpo_export_records(response: Response):
+    """Stream records from one official line-delimited JSON gzip export."""
+
+    response.raw.decode_content = False
+    with gzip.GzipFile(fileobj=response.raw) as compressed:
+        with io.TextIOWrapper(compressed, encoding="utf-8") as source:
+            header = source.readline().strip()
+            if not header.startswith('{"exportDate"') or '"results":[' not in header:
+                raise RpoSyncError("RPO export má neznámy formát hlavičky.")
+
+            for line in source:
+                payload = line.strip()
+                if not payload or payload == "]}":
+                    continue
+
+                payload = payload.lstrip(",")
+                try:
+                    record = json.loads(payload)
+                except ValueError as exc:
+                    raise RpoSyncError(
+                        "RPO export obsahuje neplatný JSON záznam."
+                    ) from exc
+
+                if not isinstance(record, dict):
+                    raise RpoSyncError("RPO export obsahuje neplatný záznam.")
+
+                yield record
+
+
+def import_rpo_sole_traders_export(
+    *,
+    batch_date: str,
+    file_number: int,
+    max_records: int = 10_000,
+    commit_every: int = 100,
+) -> dict[str, Any]:
+    """Import active sole traders from one official monthly RPO export file."""
+
+    if max_records < 1:
+        raise RpoSyncError("Limit importu musí byť aspoň 1.")
+    if commit_every < 1:
+        raise RpoSyncError("Interval ukladania musí byť aspoň 1.")
+
+    url = build_rpo_export_url(batch_date, file_number)
+    session = build_http_session()
+    response = None
+    scanned = 0
+    selected = 0
+    upserted = 0
+
+    try:
+        response = session.get(
+            url,
+            timeout=(10, 180),
+            allow_redirects=False,
+            stream=True,
+        )
+        if response.status_code != 200:
+            raise RpoSyncError(
+                f"RPO export vrátil HTTP {response.status_code}."
+            )
+
+        for export_record in iter_rpo_export_records(response):
+            scanned += 1
+            if not is_trade_register(
+                extract_source_register_name({"data": export_record})
+            ):
+                continue
+            if export_record.get("termination"):
+                continue
+
+            selected += 1
+            wrapped_record = {
+                "id": export_record.get("id"),
+                "data": export_record,
+            }
+            if upsert_rpo_record(wrapped_record) is not None:
+                upserted += 1
+
+            if selected % commit_every == 0:
+                db.session.commit()
+
+            if selected >= max_records:
+                break
+
+        db.session.commit()
+        return {
+            "status": "success",
+            "batch_date": batch_date,
+            "file_number": file_number,
+            "scanned": scanned,
+            "selected_active_sole_traders": selected,
+            "upserted": upserted,
+            "source_url": url,
+        }
+    except Exception:
+        db.session.rollback()
+        raise
+    finally:
+        if response is not None:
+            response.close()
+        session.close()
 
 
 def fetch_record_detail(
@@ -2865,6 +3037,7 @@ def backfill_rpo_company_fields():
 def create_initial_sync_url(
     state: SyncState,
     only_ids: bool,
+    full_sync: bool = False,
 ) -> str:
     """
     Pri prvom importe bez last_successful_sync_at zavolá celý sync.
@@ -2875,7 +3048,7 @@ def create_initial_sync_url(
 
     params: list[str] = []
 
-    if state.last_successful_sync_at:
+    if state.last_successful_sync_at and not full_sync:
         params.append(
             "since="
             + requests.utils.quote(
@@ -2900,6 +3073,7 @@ def sync_rpo(
     commit_every: int = 100,
     delay_seconds: float = 1.1,
     resume: bool = True,
+    full_sync: bool = False,
 ) -> dict[str, Any]:
     """
     Synchronizuje RPO2 do lokálnej databázy.
@@ -2924,6 +3098,10 @@ def sync_rpo(
     resume:
         Ak existuje next_url z predošlého prerušeného behu,
         pokračuje z nej.
+
+    full_sync:
+        Ignoruje posledný úspešný čas aj rozpracovanú next_url a načíta
+        celú históriu. Používa sa pri rozšírení podporovaných typov subjektov.
     """
 
     if max_records is not None and max_records <= 0:
@@ -2937,7 +3115,7 @@ def sync_rpo(
 
     current_run_started_at = utcnow()
 
-    if resume and state.next_url:
+    if resume and not full_sync and state.next_url:
         url = state.next_url
 
         if state.sync_started_at is None:
@@ -2952,6 +3130,7 @@ def sync_rpo(
         url = create_initial_sync_url(
             state=state,
             only_ids=only_ids,
+            full_sync=full_sync,
         )
 
     state.status = "running"

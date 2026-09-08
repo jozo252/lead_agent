@@ -25,6 +25,10 @@ from services.company_web_enrichment import enrich_company_from_website
 from services.rpo_sync import enrich_company_contacts
 from services.ruz_financials import enrich_company_financials
 from services.company_filtering import (
+    ENTITY_COMPANY,
+    ENTITY_SOLE_TRADER,
+    companies_for_entity,
+    company_entity,
     company_filters_from_source,
     filtered_companies_query,
 )
@@ -178,10 +182,18 @@ def dashboard_metrics():
     )
 
     return {
-        "companies": Company.query.count(),
+        "companies": companies_for_entity(ENTITY_COMPANY).count(),
+        "sole_traders": companies_for_entity(ENTITY_SOLE_TRADER).count(),
         "companies_with_email": (
             db.session.query(func.count(func.distinct(CompanyContact.company_id)))
+            .join(Company, Company.id == CompanyContact.company_id)
             .filter(func.lower(CompanyContact.contact_type) == "email")
+            .filter(
+                or_(
+                    Company.legal_form.is_(None),
+                    ~Company.legal_form.ilike("Podnikateľ-fyzická osoba%"),
+                )
+            )
             .scalar()
             or 0
         ),
@@ -319,7 +331,7 @@ def companies():
     return render_template(
         "companies.html",
         companies=companies,
-        total_companies=Company.query.count(),
+        total_companies=companies_for_entity(filters["entity"]).count(),
         filtered_companies_count=filtered_companies_count,
         page=page,
         page_count=page_count,
@@ -331,6 +343,21 @@ def companies():
             Campaign.status.notin_(["completed", "archived"])
         ).order_by(Campaign.created_at.desc()).all(),
         selected_campaign_id=selected_campaign_id,
+        entity_title={
+            ENTITY_COMPANY: "Firmy z RPO",
+            ENTITY_SOLE_TRADER: "Živnostníci z RPO",
+            "all": "Firmy a živnostníci z RPO",
+        }[filters["entity"]],
+        entity_count_label={
+            ENTITY_COMPANY: "firiem",
+            ENTITY_SOLE_TRADER: "živnostníkov",
+            "all": "subjektov",
+        }[filters["entity"]],
+        entity_column_label={
+            ENTITY_COMPANY: "Firma",
+            ENTITY_SOLE_TRADER: "Živnostník",
+            "all": "Subjekt",
+        }[filters["entity"]],
     )
 
 
@@ -503,6 +530,7 @@ def company_detail(company_id):
         outreach_lead=Lead.query.filter_by(company_id=company.id).one_or_none(),
         outreach_industries=OUTREACH_INDUSTRIES,
         default_follow_up=(date.today() + timedelta(days=5)).isoformat(),
+        company_entity=company_entity(company),
     )
 
 

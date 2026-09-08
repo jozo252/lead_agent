@@ -6,6 +6,7 @@ from flask.cli import with_appcontext
 from services.rpo_sync import (
     backfill_rpo_company_fields,
     enrich_company_contacts,
+    import_rpo_sole_traders_export,
     sync_rpo,
 )
 from services.company_web_enrichment import enrich_company_websites
@@ -48,6 +49,16 @@ from services.ruz_financials import enrich_company_financials
     default=False,
     help="Ignoruje uloženú next_url a začne nový sync beh.",
 )
+@click.option(
+    "--full",
+    "full_sync",
+    is_flag=True,
+    default=False,
+    help=(
+        "Ignoruje lokálny checkpoint synchronizačného API. Na kompletný "
+        "historický export použite import-rpo-sole-traders."
+    ),
+)
 @with_appcontext
 def sync_rpo_command(
     max_records: int | None,
@@ -55,9 +66,10 @@ def sync_rpo_command(
     commit_every: int,
     delay: float,
     restart: bool,
+    full_sync: bool,
 ) -> None:
     """
-    Synchronizuje právnické osoby z RPO V2.
+    Synchronizuje firmy a živnostníkov z RPO V2.
     """
 
     click.echo("Spúšťam RPO2 synchronizáciu...")
@@ -69,6 +81,64 @@ def sync_rpo_command(
             commit_every=commit_every,
             delay_seconds=delay,
             resume=not restart,
+            full_sync=full_sync,
+        )
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    click.echo(
+        json.dumps(
+            result,
+            ensure_ascii=False,
+            indent=2,
+            default=str,
+        )
+    )
+
+
+@click.command("import-rpo-sole-traders")
+@click.option(
+    "--batch-date",
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    required=True,
+    help="Dátum mesačnej inicializačnej dávky RPO.",
+)
+@click.option(
+    "--file-number",
+    type=click.IntRange(min=1, max=999),
+    required=True,
+    help="Poradové číslo súboru inicializačnej dávky.",
+)
+@click.option(
+    "--max-records",
+    type=click.IntRange(min=1),
+    default=10_000,
+    show_default=True,
+    help="Maximálny počet aktívnych živnostníkov na import.",
+)
+@click.option(
+    "--commit-every",
+    type=click.IntRange(min=1),
+    default=100,
+    show_default=True,
+    help="Počet živnostníkov medzi databázovými commitmi.",
+)
+@with_appcontext
+def import_rpo_sole_traders_command(
+    batch_date,
+    file_number: int,
+    max_records: int,
+    commit_every: int,
+) -> None:
+    """Import active sole traders from an official monthly RPO export."""
+
+    click.echo("Importujem živnostníkov z oficiálneho exportu RPO...")
+    try:
+        result = import_rpo_sole_traders_export(
+            batch_date=batch_date.date().isoformat(),
+            file_number=file_number,
+            max_records=max_records,
+            commit_every=commit_every,
         )
     except Exception as exc:
         raise click.ClickException(str(exc)) from exc

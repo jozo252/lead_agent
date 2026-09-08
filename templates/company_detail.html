@@ -1,11 +1,11 @@
 {% extends "base.html" %}
 
-{% block title %}{{ company.official_name or company.ico }} | Firmy z RPO{% endblock %}
+{% block title %}{{ company.official_name or company.ico }} | RPO{% endblock %}
 
 {% block content %}
 <div class="page-header">
     <div>
-        <a class="small" href="{{ url_for('main.companies') }}">← Všetky firmy</a>
+        <a class="small" href="{{ url_for('main.companies', entity=company_entity) }}">← {% if company_entity == "sole_trader" %}Živnostníci{% else %}Firmy{% endif %}</a>
         <h2 class="page-title">{{ company.official_name or "Bez názvu" }}</h2>
         <p class="page-subtitle">IČO: {{ company.ico or "—" }} · {{ company.municipality or "obec neznáma" }}</p>
     </div>

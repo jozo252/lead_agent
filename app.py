@@ -11,6 +11,7 @@ from commands.rpo import (
     enrich_contacts_command,
     enrich_financials_command,
     enrich_websites_command,
+    import_rpo_sole_traders_command,
     sync_rpo_command,
 )
 from commands.email import test_imap_command, test_smtp_command
@@ -221,6 +222,7 @@ def create_app(config=None):
     csrf.init_app(app)
     mail.init_app(app)
     app.cli.add_command(sync_rpo_command)
+    app.cli.add_command(import_rpo_sole_traders_command)
     app.cli.add_command(enrich_contacts_command)
     app.cli.add_command(enrich_financials_command)
     app.cli.add_command(backfill_rpo_fields_command)

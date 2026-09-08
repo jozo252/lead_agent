@@ -8,7 +8,7 @@ import time
 from datetime import date, datetime, timezone
 from difflib import SequenceMatcher
 from html import unescape
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urljoin, urlsplit
 
 import requests
@@ -38,6 +38,8 @@ RPO_EXPORT_BASE_URL = (
 )
 
 SYNC_NAME = "rpo2_organizations"
+RPO_SOLE_TRADER_EXPORT_SYNC_NAME = "rpo2_sole_traders_export"
+RPO_SOLE_TRADER_FILTER_VERSION = 1
 
 
 class RpoSyncError(RuntimeError):
@@ -2946,6 +2948,269 @@ def import_rpo_sole_traders_export(
         }
     except Exception:
         db.session.rollback()
+        raise
+    finally:
+        if response is not None:
+            response.close()
+        session.close()
+
+
+def build_rpo_export_checkpoint(
+    *,
+    batch_date: str,
+    first_file: int,
+    last_file: int,
+    file_number: int,
+    record_offset: int,
+    completed: bool = False,
+) -> str:
+    return json.dumps(
+        {
+            "batch_date": batch_date,
+            "filter_version": RPO_SOLE_TRADER_FILTER_VERSION,
+            "first_file": first_file,
+            "last_file": last_file,
+            "file_number": file_number,
+            "record_offset": record_offset,
+            "completed": completed,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def parse_rpo_export_checkpoint(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+
+    try:
+        checkpoint = json.loads(value)
+    except ValueError as exc:
+        raise RpoSyncError("Checkpoint RPO exportu je poškodený.") from exc
+
+    if not isinstance(checkpoint, dict):
+        raise RpoSyncError("Checkpoint RPO exportu má neplatný formát.")
+
+    required = {
+        "batch_date",
+        "filter_version",
+        "first_file",
+        "last_file",
+        "file_number",
+        "record_offset",
+        "completed",
+    }
+    if not required.issubset(checkpoint):
+        raise RpoSyncError("Checkpoint RPO exportu je neúplný.")
+
+    return checkpoint
+
+
+def get_or_create_rpo_export_sync_state() -> SyncState:
+    state = SyncState.query.filter_by(
+        name=RPO_SOLE_TRADER_EXPORT_SYNC_NAME
+    ).one_or_none()
+    if state is None:
+        state = SyncState(
+            name=RPO_SOLE_TRADER_EXPORT_SYNC_NAME,
+            status="idle",
+            processed_records=0,
+            fetched_records=0,
+            skipped_records=0,
+        )
+        db.session.add(state)
+        db.session.commit()
+    return state
+
+
+def import_rpo_sole_traders_batch(
+    *,
+    batch_date: str,
+    first_file: int = 1,
+    last_file: int = 23,
+    commit_every: int = 100,
+    resume: bool = True,
+    should_stop: Callable[[], bool] | None = None,
+) -> dict[str, Any]:
+    """Import a resumable RPO batch and checkpoint every committed chunk."""
+
+    try:
+        normalized_date = date.fromisoformat(batch_date).isoformat()
+    except (TypeError, ValueError) as exc:
+        raise RpoSyncError("Neplatný dátum RPO exportu.") from exc
+    if not 1 <= first_file <= last_file <= 999:
+        raise RpoSyncError("Neplatný rozsah súborov RPO exportu.")
+    if commit_every < 1:
+        raise RpoSyncError("Interval ukladania musí byť aspoň 1.")
+
+    stop_requested = should_stop or (lambda: False)
+    state = get_or_create_rpo_export_sync_state()
+    checkpoint = parse_rpo_export_checkpoint(state.next_url)
+
+    expected_checkpoint = {
+        "batch_date": normalized_date,
+        "filter_version": RPO_SOLE_TRADER_FILTER_VERSION,
+        "first_file": first_file,
+        "last_file": last_file,
+    }
+    if resume and checkpoint:
+        actual_checkpoint = {
+            key: checkpoint.get(key)
+            for key in expected_checkpoint
+        }
+        if actual_checkpoint != expected_checkpoint:
+            raise RpoSyncError(
+                "Uložený checkpoint patrí inej dávke alebo rozsahu. "
+                "Použite --restart."
+            )
+        if checkpoint.get("completed"):
+            return {
+                "status": "success",
+                "already_completed": True,
+                "batch_date": normalized_date,
+                "first_file": first_file,
+                "last_file": last_file,
+                "fetched": state.fetched_records,
+                "imported": state.processed_records,
+                "skipped": state.skipped_records,
+                "checkpoint": checkpoint,
+            }
+        current_file = int(checkpoint["file_number"])
+        record_offset = int(checkpoint["record_offset"])
+    else:
+        current_file = first_file
+        record_offset = 0
+        state.processed_records = 0
+        state.fetched_records = 0
+        state.skipped_records = 0
+        state.sync_started_at = utcnow()
+
+    state.status = "running"
+    state.last_error = None
+    state.next_url = build_rpo_export_checkpoint(
+        batch_date=normalized_date,
+        first_file=first_file,
+        last_file=last_file,
+        file_number=current_file,
+        record_offset=record_offset,
+    )
+    db.session.commit()
+
+    session = build_http_session()
+    response = None
+    records_since_commit = 0
+
+    def save_checkpoint(
+        *,
+        status: str,
+        file_number: int,
+        offset: int,
+        completed: bool = False,
+    ) -> dict[str, Any]:
+        state.status = status
+        state.next_url = build_rpo_export_checkpoint(
+            batch_date=normalized_date,
+            first_file=first_file,
+            last_file=last_file,
+            file_number=file_number,
+            record_offset=offset,
+            completed=completed,
+        )
+        if completed:
+            state.last_successful_sync_at = utcnow()
+        db.session.commit()
+        return {
+            "status": status,
+            "batch_date": normalized_date,
+            "first_file": first_file,
+            "last_file": last_file,
+            "fetched": state.fetched_records,
+            "imported": state.processed_records,
+            "skipped": state.skipped_records,
+            "checkpoint": parse_rpo_export_checkpoint(state.next_url),
+        }
+
+    try:
+        for file_number in range(current_file, last_file + 1):
+            offset = record_offset if file_number == current_file else 0
+            if stop_requested():
+                return save_checkpoint(
+                    status="stopped",
+                    file_number=file_number,
+                    offset=offset,
+                )
+
+            response = session.get(
+                build_rpo_export_url(normalized_date, file_number),
+                timeout=(10, 180),
+                allow_redirects=False,
+                stream=True,
+            )
+            if response.status_code != 200:
+                raise RpoSyncError(
+                    f"RPO export vrátil HTTP {response.status_code}."
+                )
+
+            for position, export_record in enumerate(
+                iter_rpo_export_records(response),
+                start=1,
+            ):
+                if position <= offset:
+                    continue
+
+                state.fetched_records += 1
+                is_target = (
+                    is_trade_register(
+                        extract_source_register_name({"data": export_record})
+                    )
+                    and not export_record.get("termination")
+                    and matches_target_sole_trader_focus(export_record)
+                )
+                if is_target:
+                    wrapped_record = {
+                        "id": export_record.get("id"),
+                        "data": export_record,
+                    }
+                    if upsert_rpo_record(wrapped_record) is not None:
+                        state.processed_records += 1
+                    else:
+                        state.skipped_records += 1
+                else:
+                    state.skipped_records += 1
+
+                offset = position
+                records_since_commit += 1
+                if records_since_commit >= commit_every or stop_requested():
+                    result = save_checkpoint(
+                        status=("stopped" if stop_requested() else "running"),
+                        file_number=file_number,
+                        offset=offset,
+                    )
+                    records_since_commit = 0
+                    if result["status"] == "stopped":
+                        return result
+
+            response.close()
+            response = None
+            record_offset = 0
+            save_checkpoint(
+                status="running",
+                file_number=file_number + 1,
+                offset=0,
+            )
+
+        return save_checkpoint(
+            status="success",
+            file_number=last_file + 1,
+            offset=0,
+            completed=True,
+        )
+    except Exception as exc:
+        db.session.rollback()
+        state = get_or_create_rpo_export_sync_state()
+        state.status = "failed"
+        state.last_error = f"{type(exc).__name__}: {exc}"
+        db.session.commit()
         raise
     finally:
         if response is not None:

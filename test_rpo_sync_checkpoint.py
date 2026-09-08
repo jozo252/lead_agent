@@ -12,10 +12,12 @@ from extensions import db
 from models import Company, CompanyContact, CompanySource, SyncState
 from services.rpo_sync import (
     RPO_SYNC_URL,
+    RPO_SOLE_TRADER_EXPORT_SYNC_NAME,
     SYNC_NAME,
     companies_for_contact_enrichment,
     create_initial_sync_url,
     find_rpo_source,
+    import_rpo_sole_traders_batch,
     import_rpo_sole_traders_export,
     sync_rpo,
 )
@@ -261,6 +263,103 @@ class RpoSyncCheckpointTests(unittest.TestCase):
             stream=True,
         )
         session.close.assert_called_once()
+
+    @patch("services.rpo_sync.build_http_session")
+    def test_batch_import_commits_stop_checkpoint_and_resumes(
+        self,
+        build_session,
+    ):
+        def trader(record_id, ico):
+            return {
+                "id": record_id,
+                "identifiers": [{"value": ico}],
+                "fullNames": [{"value": f"Živnostník {record_id}"}],
+                "legalForms": [
+                    {
+                        "value": {
+                            "value": (
+                                "Podnikateľ-fyzická osoba-nezapísaný "
+                                "v obchodnom registri"
+                            )
+                        }
+                    }
+                ],
+                "sourceRegister": {
+                    "value": {"value": "Živnostenský register"}
+                },
+                "statisticalCodes": {
+                    "mainActivity": {"code": "4321"}
+                },
+            }
+
+        first_file_records = [
+            trader(2001, "20000001"),
+            trader(2002, "20000002"),
+        ]
+        second_file_records = [trader(2003, "20000003")]
+        first_session = SimpleNamespace(
+            get=Mock(return_value=FakeExportResponse(first_file_records)),
+            close=Mock(),
+        )
+        resumed_session = SimpleNamespace(
+            get=Mock(
+                side_effect=[
+                    FakeExportResponse(first_file_records),
+                    FakeExportResponse(second_file_records),
+                ]
+            ),
+            close=Mock(),
+        )
+        build_session.side_effect = [first_session, resumed_session]
+
+        stop_checks = 0
+
+        def stop_after_first_record():
+            nonlocal stop_checks
+            stop_checks += 1
+            return stop_checks >= 2
+
+        stopped = import_rpo_sole_traders_batch(
+            batch_date="2026-09-05",
+            first_file=1,
+            last_file=2,
+            commit_every=100,
+            should_stop=stop_after_first_record,
+        )
+
+        self.assertEqual(stopped["status"], "stopped")
+        self.assertEqual(stopped["imported"], 1)
+        self.assertEqual(stopped["checkpoint"]["file_number"], 1)
+        self.assertEqual(stopped["checkpoint"]["record_offset"], 1)
+        self.assertEqual(Company.query.count(), 1)
+
+        resumed = import_rpo_sole_traders_batch(
+            batch_date="2026-09-05",
+            first_file=1,
+            last_file=2,
+            commit_every=100,
+        )
+
+        self.assertEqual(resumed["status"], "success")
+        self.assertEqual(resumed["fetched"], 3)
+        self.assertEqual(resumed["imported"], 3)
+        self.assertTrue(resumed["checkpoint"]["completed"])
+        self.assertEqual(Company.query.count(), 3)
+        state = SyncState.query.filter_by(
+            name=RPO_SOLE_TRADER_EXPORT_SYNC_NAME
+        ).one()
+        self.assertEqual(state.status, "success")
+        self.assertEqual(state.processed_records, 3)
+        first_session.close.assert_called_once()
+        resumed_session.close.assert_called_once()
+
+        repeated = import_rpo_sole_traders_batch(
+            batch_date="2026-09-05",
+            first_file=1,
+            last_file=2,
+        )
+        self.assertTrue(repeated["already_completed"])
+        self.assertEqual(build_session.call_count, 2)
 
     def test_rpo_source_lookup_filters_same_external_id_by_source_type(self):
         company = Company(ico="12345678", official_name="Test")

@@ -9,6 +9,7 @@ from services.website_presence import website_absence_filter
 
 
 FILTER_NAMES = (
+    "entity",
     "q",
     "sk_nace",
     "region",
@@ -27,9 +28,47 @@ FILTER_NAMES = (
     "subcontractor_need",
 )
 
+ENTITY_COMPANY = "company"
+ENTITY_SOLE_TRADER = "sole_trader"
+ENTITY_ALL = "all"
+VALID_ENTITY_FILTERS = {
+    ENTITY_COMPANY,
+    ENTITY_SOLE_TRADER,
+    ENTITY_ALL,
+}
+SOLE_TRADER_LEGAL_FORM_PREFIX = "Podnikateľ-fyzická osoba"
+
 
 def company_filters_from_source(source):
-    return {name: source.get(name, "").strip() for name in FILTER_NAMES}
+    filters = {name: source.get(name, "").strip() for name in FILTER_NAMES}
+    if filters["entity"] not in VALID_ENTITY_FILTERS:
+        filters["entity"] = ENTITY_COMPANY
+    return filters
+
+
+def sole_trader_condition():
+    return Company.legal_form.ilike(f"{SOLE_TRADER_LEGAL_FORM_PREFIX}%")
+
+
+def companies_for_entity(entity):
+    query = Company.query
+    if entity == ENTITY_SOLE_TRADER:
+        return query.filter(sole_trader_condition())
+    if entity == ENTITY_ALL:
+        return query
+    return query.filter(
+        or_(
+            Company.legal_form.is_(None),
+            ~sole_trader_condition(),
+        )
+    )
+
+
+def company_entity(company):
+    legal_form = (company.legal_form or "").strip().casefold()
+    if legal_form.startswith(SOLE_TRADER_LEGAL_FORM_PREFIX.casefold()):
+        return ENTITY_SOLE_TRADER
+    return ENTITY_COMPANY
 
 
 def decimal_filter_value(value):
@@ -48,7 +87,7 @@ def radius_filter_value(value):
 
 
 def filtered_companies_query(filters):
-    query = Company.query
+    query = companies_for_entity(filters.get("entity"))
 
     if filters["q"]:
         pattern = f"%{filters['q']}%"

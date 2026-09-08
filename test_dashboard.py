@@ -63,6 +63,7 @@ class DashboardTests(unittest.TestCase):
 
         self.assertEqual(dashboard_metrics(), {
             "companies": 2,
+            "sole_traders": 0,
             "companies_with_email": 1,
             "contacts": 3,
             "leads": 3,

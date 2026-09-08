@@ -7,8 +7,10 @@ from flask import Flask
 from extensions import db
 from models import Company, CompanyContact, SyncState
 from services.rpo_sync import (
+    RPO_SYNC_URL,
     SYNC_NAME,
     companies_for_contact_enrichment,
+    create_initial_sync_url,
     sync_rpo,
 )
 
@@ -123,6 +125,30 @@ class RpoSyncCheckpointTests(unittest.TestCase):
             ["10000001"],
         )
         self.assertEqual(len(all_companies), 3)
+
+    def test_full_sync_ignores_last_successful_checkpoint(self):
+        state = SyncState(
+            name=SYNC_NAME,
+            last_successful_sync_at=datetime(
+                2026,
+                8,
+                20,
+                tzinfo=timezone.utc,
+            ),
+        )
+
+        incremental_url = create_initial_sync_url(
+            state,
+            only_ids=False,
+        )
+        full_url = create_initial_sync_url(
+            state,
+            only_ids=False,
+            full_sync=True,
+        )
+
+        self.assertIn("since=", incremental_url)
+        self.assertEqual(full_url, RPO_SYNC_URL)
 
 
 if __name__ == "__main__":

@@ -591,14 +591,26 @@ SRO_LEGAL_FORMS = {
     "s. r. o.",
 }
 
+TRADE_REGISTER_NAMES = {
+    "živnostenský register",
+}
+
+
+def normalize_rpo_label(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+
+    return " ".join(value.casefold().split())
+
 
 def is_sro_legal_form(legal_form: Any) -> bool:
     """Vráti True iba pre právnu formu spoločnosti s ručením obmedzeným."""
-    if not isinstance(legal_form, str):
-        return False
+    return normalize_rpo_label(legal_form) in SRO_LEGAL_FORMS
 
-    normalized = " ".join(legal_form.casefold().split())
-    return normalized in SRO_LEGAL_FORMS
+
+def is_trade_register(source_register: Any) -> bool:
+    """Vráti True pre záznamy zo Živnostenského registra."""
+    return normalize_rpo_label(source_register) in TRADE_REGISTER_NAMES
 
 
 def should_skip_record(normalized):
@@ -616,7 +628,12 @@ def should_skip_rpo_record(normalized, source_register=None):
     if source_register in IGNORED_RPO_REGISTERS:
         return True
 
-    if not is_sro_legal_form(normalized.get("legal_form")):
+    is_supported_record = (
+        is_sro_legal_form(normalized.get("legal_form"))
+        or is_trade_register(source_register)
+    )
+
+    if not is_supported_record:
         return True
 
     return should_skip_record(normalized)
@@ -2865,6 +2882,7 @@ def backfill_rpo_company_fields():
 def create_initial_sync_url(
     state: SyncState,
     only_ids: bool,
+    full_sync: bool = False,
 ) -> str:
     """
     Pri prvom importe bez last_successful_sync_at zavolá celý sync.
@@ -2875,7 +2893,7 @@ def create_initial_sync_url(
 
     params: list[str] = []
 
-    if state.last_successful_sync_at:
+    if state.last_successful_sync_at and not full_sync:
         params.append(
             "since="
             + requests.utils.quote(
@@ -2900,6 +2918,7 @@ def sync_rpo(
     commit_every: int = 100,
     delay_seconds: float = 1.1,
     resume: bool = True,
+    full_sync: bool = False,
 ) -> dict[str, Any]:
     """
     Synchronizuje RPO2 do lokálnej databázy.
@@ -2924,6 +2943,10 @@ def sync_rpo(
     resume:
         Ak existuje next_url z predošlého prerušeného behu,
         pokračuje z nej.
+
+    full_sync:
+        Ignoruje posledný úspešný čas aj rozpracovanú next_url a načíta
+        celú históriu. Používa sa pri rozšírení podporovaných typov subjektov.
     """
 
     if max_records is not None and max_records <= 0:
@@ -2937,7 +2960,7 @@ def sync_rpo(
 
     current_run_started_at = utcnow()
 
-    if resume and state.next_url:
+    if resume and not full_sync and state.next_url:
         url = state.next_url
 
         if state.sync_started_at is None:
@@ -2952,6 +2975,7 @@ def sync_rpo(
         url = create_initial_sync_url(
             state=state,
             only_ids=only_ids,
+            full_sync=full_sync,
         )
 
     state.status = "running"

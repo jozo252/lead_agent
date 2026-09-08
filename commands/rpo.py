@@ -48,6 +48,16 @@ from services.ruz_financials import enrich_company_financials
     default=False,
     help="Ignoruje uloženú next_url a začne nový sync beh.",
 )
+@click.option(
+    "--full",
+    "full_sync",
+    is_flag=True,
+    default=False,
+    help=(
+        "Načíta celé RPO od začiatku bez inkrementálneho checkpointu. "
+        "Použite na spätné doplnenie živnostníkov."
+    ),
+)
 @with_appcontext
 def sync_rpo_command(
     max_records: int | None,
@@ -55,9 +65,10 @@ def sync_rpo_command(
     commit_every: int,
     delay: float,
     restart: bool,
+    full_sync: bool,
 ) -> None:
     """
-    Synchronizuje právnické osoby z RPO V2.
+    Synchronizuje firmy a živnostníkov z RPO V2.
     """
 
     click.echo("Spúšťam RPO2 synchronizáciu...")
@@ -69,6 +80,7 @@ def sync_rpo_command(
             commit_every=commit_every,
             delay_seconds=delay,
             resume=not restart,
+            full_sync=full_sync,
         )
     except Exception as exc:
         raise click.ClickException(str(exc)) from exc

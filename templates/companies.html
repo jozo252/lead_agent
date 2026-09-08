@@ -1,12 +1,12 @@
 {% extends "base.html" %}
 
-{% block title %}Firmy z RPO | LeadHunter CRM{% endblock %}
+{% block title %}{{ entity_title }} | LeadHunter CRM{% endblock %}
 
 {% block content %}
 <div class="page-header">
     <div>
-        <h2 class="page-title">Firmy z RPO</h2>
-        <p class="page-subtitle">Zobrazených {{ companies|length }} z {{ filtered_companies_count }} vyfiltrovaných firiem (celkovo {{ total_companies }}). Strana {{ page }} z {{ page_count }}.</p>
+        <h2 class="page-title">{{ entity_title }}</h2>
+        <p class="page-subtitle">Zobrazených {{ companies|length }} z {{ filtered_companies_count }} vyfiltrovaných {{ entity_count_label }} (celkovo {{ total_companies }}). Strana {{ page }} z {{ page_count }}.</p>
     </div>
 </div>
 
@@ -16,6 +16,11 @@
 
 <section class="card section-gap">
     <form method="get" class="company-filters">
+        <select name="entity">
+            <option value="company" {% if filters.entity == "company" %}selected{% endif %}>Firmy</option>
+            <option value="sole_trader" {% if filters.entity == "sole_trader" %}selected{% endif %}>Živnostníci</option>
+            <option value="all" {% if filters.entity == "all" %}selected{% endif %}>Všetky subjekty</option>
+        </select>
         <input type="search" name="q" value="{{ filters.q }}" placeholder="Názov, IČO alebo obec">
         <input type="search" name="sk_nace" value="{{ filters.sk_nace }}" placeholder="SK NACE, napr. 4321 alebo elektro">
         <input type="search" name="region" value="{{ filters.region }}" placeholder="Obec alebo región, napr. Košice">
@@ -73,7 +78,7 @@
         </select>
         <div class="filter-actions">
             <button type="submit">Filtrovať</button>
-            <a class="btn btn-secondary" href="{{ url_for('main.companies') }}">Zrušiť</a>
+            <a class="btn btn-secondary" href="{{ url_for('main.companies', entity=filters.entity) }}">Zrušiť</a>
         </div>
     </form>
 </section>
@@ -192,7 +197,7 @@
             <thead>
                 <tr>
                     <th>Por.</th>
-                    <th>Firma</th>
+                    <th>{{ entity_column_label }}</th>
                     <th>IČO</th>
                     <th>Obec</th>
                     <th>Právna forma</th>

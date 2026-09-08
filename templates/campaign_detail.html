@@ -24,7 +24,14 @@
 <section class="card section-gap status-panel">
     <div>
         <h3 class="card-title">Stav kampane</h3>
-        <p class="muted small">Pozastavená alebo ukončená kampaň neposiela ďalšie e-maily. Pri AI kampani aktivácia schvaľuje aj budúce automaticky pripravené dávky.</p>
+        <p class="muted small">
+            Pozastavená alebo ukončená kampaň neposiela ďalšie e-maily.
+            {% if campaign.automation_enabled and campaign.targeting_profile and campaign.targeting_profile.get('selection_mode') == 'approved_only' %}
+                Táto kampaň odošle iba ručne schválený zoznam.
+            {% elif campaign.automation_enabled %}
+                Aktivácia AI kampane schvaľuje aj budúce automaticky pripravené dávky.
+            {% endif %}
+        </p>
     </div>
     <form method="post" action="{{ url_for('campaigns.update_campaign_status', campaign_id=campaign.id) }}" class="status-form">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -159,6 +166,9 @@
             denný limit {{ campaign.daily_limit }}, odstup od posledného oslovenia
             {{ campaign.contact_cooldown_days }} dní, follow-up po {{ campaign.follow_up_days }} dňoch.
         </p>
+        {% if campaign.targeting_profile and campaign.targeting_profile.get('selection_mode') == 'approved_only' %}
+            <p class="flash flash-info">Automatizácia odosiela iba vopred schválený zoznam a sama nepridáva ďalšie firmy.</p>
+        {% endif %}
         {% if campaign.targeting_profile %}
             <p><strong>Ideálny zákazník:</strong> {{ campaign.targeting_profile.get('ideal_customer_profile', '—') }}</p>
             <p class="muted small">
@@ -215,6 +225,10 @@
         <label>Obce/lokality, oddelené čiarkou<input name="location_keywords" value="{{ campaign.targeting_profile.get('location_keywords', [])|join(', ') if campaign.targeting_profile else '' }}" placeholder="Napr. Bratislava, Pezinok, Senec"></label>
         <label>Predmet<input name="subject_template" maxlength="255" required value="{{ campaign.subject_template }}"></label>
         <label>Základný text<textarea name="body_template" rows="8" required>{{ campaign.body_template }}</textarea></label>
+        <label class="checkbox-field">
+            <input type="checkbox" name="approved_recipients_only" {% if campaign.targeting_profile and campaign.targeting_profile.get('selection_mode') == 'approved_only' %}checked{% endif %}>
+            Odosielať iba vopred schválených príjemcov; automaticky nedopĺňať ďalšie firmy
+        </label>
         <div class="grid grid-6 limits-grid">
             <label>Min. zhoda<input type="number" name="minimum_fit_score" min="0" max="100" value="{{ campaign.targeting_profile.get('minimum_fit_score', 60) if campaign.targeting_profile else 60 }}"></label>
             <label>Celkový cieľ<input type="number" name="target_total" min="1" max="1000" value="{{ campaign.target_total }}"></label>

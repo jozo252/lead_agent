@@ -126,6 +126,7 @@ def new_campaign():
     body_template = request.form.get("body_template", "").strip()
     offer_stage = request.form.get("offer_stage", "ready").strip()
     automation_enabled = request.form.get("automation_enabled") == "on"
+    approved_recipients_only = request.form.get("approved_recipients_only") == "on"
     business_line = request.form.get("business_line", "general").strip()
     scout_enabled = request.form.get("scout_enabled") == "on"
     raw_scout_queries = request.form.get("scout_queries", "")
@@ -215,6 +216,8 @@ def new_campaign():
                     form=request.form,
                 )
             targeting_profile = plan["targeting_profile"]
+            if approved_recipients_only:
+                targeting_profile["selection_mode"] = "approved_only"
             subject_template = subject_template or plan["subject_template"]
             body_template = body_template or plan["body_template"]
             body_template = clean_automated_outreach_body(
@@ -265,11 +268,22 @@ def new_campaign():
         )
         db.session.add(campaign)
         db.session.commit()
+        if automation_enabled and approved_recipients_only:
+            creation_message = (
+                "Kampaň bola vytvorená. Pred aktiváciou skontroluj a ručne schváľ "
+                "presný zoznam; automatizácia ďalšie firmy nepridá."
+            )
+        elif automation_enabled:
+            creation_message = (
+                "Kampaň bola vytvorená. Skontroluj AI zacielenie a text; aktivácia "
+                "automatickej kampane schváli budúce denné dávky na odoslanie."
+            )
+        else:
+            creation_message = (
+                "Kampaň bola vytvorená. Teraz do nej pridaj vyfiltrované firmy."
+            )
         flash(
-            "Kampaň bola vytvorená. Skontroluj AI zacielenie a text; aktivácia "
-            "automatickej kampane schváli budúce denné dávky na odoslanie."
-            if automation_enabled
-            else "Kampaň bola vytvorená. Teraz do nej pridaj vyfiltrované firmy.",
+            creation_message,
             "success",
         )
         return redirect(url_for("campaigns.campaign_detail", campaign_id=campaign.id))
@@ -419,7 +433,10 @@ def update_campaign_status(campaign_id):
         flash("Automatickej kampani chýba AI profil zacielenia.", "error")
     else:
         approved_automatic_drafts = 0
-        if status == "active" and campaign.automation_enabled:
+        approved_only = (
+            (campaign.targeting_profile or {}).get("selection_mode") == "approved_only"
+        )
+        if status == "active" and campaign.automation_enabled and not approved_only:
             automatic_drafts = CampaignRecipient.query.filter_by(
                 campaign_id=campaign.id,
                 selection_source="automation",
@@ -450,8 +467,12 @@ def update_campaign_status(campaign_id):
                 "Kampaň je aktívna. Budúce automatické dávky sú schválené na "
                 f"odoslanie; schválené vybrané firmy: {approved_automatic_drafts}."
             )
-            if status == "active" and campaign.automation_enabled
-            else "Stav kampane bol uložený.",
+            if status == "active" and campaign.automation_enabled and not approved_only
+            else (
+                "Kampaň je aktívna. Automatizácia odošle iba vopred schválených príjemcov."
+                if status == "active" and campaign.automation_enabled and approved_only
+                else "Stav kampane bol uložený."
+            ),
             "success",
         )
     return redirect(url_for("campaigns.campaign_detail", campaign_id=campaign.id))
@@ -499,10 +520,15 @@ def select_automatic_companies(campaign_id):
         return redirect(url_for("campaigns.campaign_detail", campaign_id=campaign.id))
 
     if result["prepared"]:
+        approval_note = (
+            "Firmy sú zatiaľ koncepty a pred odoslaním ich treba schváliť ručne."
+            if (campaign.targeting_profile or {}).get("selection_mode") == "approved_only"
+            else "Firmy sú zatiaľ koncepty a odošlú sa až po aktivácii kampane."
+        )
         message = (
             f"Vybrané firmy: {result['prepared']}; bez e-mailu: "
             f"{result['without_email']}; potlačené: {result['suppressed']}. "
-            "Firmy sú zatiaľ koncepty a odošlú sa až po aktivácii kampane."
+            + approval_note
         )
         category = "success"
     elif result["considered"] == 0:
@@ -562,7 +588,10 @@ def regenerate_automatic_targeting(campaign_id):
         flash("Regenerovanie AI zacielenia zlyhalo.", "error")
         return redirect(url_for("campaigns.campaign_detail", campaign_id=campaign.id))
 
-    campaign.targeting_profile = plan["targeting_profile"]
+    regenerated_profile = plan["targeting_profile"]
+    if profile.get("selection_mode") == "approved_only":
+        regenerated_profile["selection_mode"] = "approved_only"
+    campaign.targeting_profile = regenerated_profile
     campaign.last_automation_error = None
     db.session.commit()
     flash(
@@ -610,6 +639,11 @@ def update_automation_settings(campaign_id):
         default=60,
         minimum=0,
         maximum=100,
+    )
+    profile["selection_mode"] = (
+        "approved_only"
+        if request.form.get("approved_recipients_only") == "on"
+        else "automatic"
     )
     if not profile["nace_keywords"] and not profile["company_keywords"]:
         flash("Zadaj aspoň jedno SK NACE alebo firemné kľúčové slovo.", "error")

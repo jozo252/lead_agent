@@ -418,6 +418,28 @@ def _has_pending_followups(campaign):
     ).first() is not None
 
 
+def _uses_approved_recipient_pool(campaign):
+    """Return whether automation may only drain an already approved recipient pool."""
+    return (campaign.targeting_profile or {}).get("selection_mode") == "approved_only"
+
+
+def _empty_preparation_result(campaign, *, mode=None):
+    result = {
+        "prepared": 0,
+        "considered": 0,
+        "ranked": 0,
+        "qualified": 0,
+        "minimum_score": int(
+            (campaign.targeting_profile or {}).get("minimum_fit_score", 60)
+        ),
+        "without_email": 0,
+        "suppressed": 0,
+    }
+    if mode:
+        result["mode"] = mode
+    return result
+
+
 def _run_campaign_automation_locked(campaign, force, lock_token):
     now = utcnow()
     if not campaign.automation_enabled:
@@ -454,10 +476,16 @@ def _run_campaign_automation_locked(campaign, force, lock_token):
             campaign_id=campaign.id,
             status="approved",
         ).count()
-        preparation = prepare_automated_recipients(
-            campaign,
-            max(0, requested - approved_count),
-        )
+        if _uses_approved_recipient_pool(campaign):
+            preparation = _empty_preparation_result(
+                campaign,
+                mode="approved_only",
+            )
+        else:
+            preparation = prepare_automated_recipients(
+                campaign,
+                max(0, requested - approved_count),
+            )
         delivery = send_campaign_recipients(
             campaign,
             requested,
@@ -469,7 +497,9 @@ def _run_campaign_automation_locked(campaign, force, lock_token):
             campaign.completed_at = utcnow()
         if preparation["prepared"] == 0 and delivery["sent"] == 0:
             campaign.last_automation_error = (
-                "Nenašli sa nové firmy s dostatočnou zhodou a použiteľným e-mailom."
+                "Kampaň nemá ďalších vopred schválených príjemcov."
+                if _uses_approved_recipient_pool(campaign)
+                else "Nenašli sa nové firmy s dostatočnou zhodou a použiteľným e-mailom."
             )
         summary = {
             "campaign_id": campaign.id,

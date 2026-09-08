@@ -601,6 +601,35 @@ TRADE_REGISTER_NAMES = {
     "živnostenský register",
 }
 
+TARGET_SOLE_TRADER_NACE_PREFIXES = (
+    "27",  # výroba elektrických zariadení
+    "41",  # výstavba budov
+    "42",  # inžinierske stavby
+)
+
+TARGET_SOLE_TRADER_NACE_CODES = {
+    "3312",  # oprava strojov
+    "3314",  # oprava elektrických zariadení
+    "3320",  # inštalácia priemyselných strojov a zariadení
+    "4321",  # elektroinštalačné práce
+    "4322",  # inštalácia vody, kúrenia a klimatizácie
+    "4323",  # ostatné stavebné inštalácie
+    "7112",  # inžinierske činnosti a technické poradenstvo
+    "8020",  # bezpečnostné systémy vrátane signalizácie
+}
+
+TARGET_SOLE_TRADER_ACTIVITY_FRAGMENTS = (
+    "elektr",
+    "automatiz",
+    "slabopr",
+    "silnopr",
+    "bleskozvod",
+    "hromozvod",
+    "rozvadz",
+    "rozvdz",  # tvar z verejného exportu s poškodenou diakritikou
+    "meraniearegul",
+)
+
 
 def normalize_rpo_label(value: Any) -> str | None:
     if not isinstance(value, str):
@@ -617,6 +646,66 @@ def is_sro_legal_form(legal_form: Any) -> bool:
 def is_trade_register(source_register: Any) -> bool:
     """Vráti True pre záznamy zo Živnostenského registra."""
     return normalize_rpo_label(source_register) in TRADE_REGISTER_NAMES
+
+
+def normalize_rpo_search_text(value: Any) -> str:
+    """Normalize RPO labels, including export rows with broken diacritics."""
+
+    if not isinstance(value, str):
+        return ""
+
+    decomposed = unicodedata.normalize("NFKD", value.casefold())
+    return "".join(character for character in decomposed if character.isalnum())
+
+
+def matches_target_sole_trader_focus(record: dict[str, Any]) -> bool:
+    """Select electrical, construction and closely related sole traders."""
+
+    if not isinstance(record, dict):
+        return False
+
+    statistical_codes = record.get("statisticalCodes")
+    if not isinstance(statistical_codes, dict):
+        statistical_codes = {}
+    main_activity = statistical_codes.get("mainActivity")
+    if not isinstance(main_activity, dict):
+        main_activity = {}
+
+    nace_code = "".join(
+        character
+        for character in str(main_activity.get("code") or "")
+        if character.isdigit()
+    )
+    if (
+        nace_code in TARGET_SOLE_TRADER_NACE_CODES
+        or nace_code.startswith(TARGET_SOLE_TRADER_NACE_PREFIXES)
+    ):
+        return True
+
+    activities = record.get("activities")
+    if not isinstance(activities, list):
+        return False
+
+    for activity in activities:
+        if not isinstance(activity, dict) or activity.get("validTo"):
+            continue
+        description = normalize_rpo_search_text(
+            activity.get("economicActivityDescription")
+        )
+        if any(
+            fragment in description
+            for fragment in TARGET_SOLE_TRADER_ACTIVITY_FRAGMENTS
+        ):
+            return True
+        if (
+            "signaliz" in description
+            and ("poziar" in description or "poiar" in description)
+        ):
+            return True
+        if "zabezpe" in description and "syst" in description:
+            return True
+
+    return False
 
 
 def should_skip_record(normalized):
@@ -2783,7 +2872,7 @@ def import_rpo_sole_traders_export(
     max_records: int = 10_000,
     commit_every: int = 100,
 ) -> dict[str, Any]:
-    """Import active sole traders from one official monthly RPO export file."""
+    """Import target-sector active sole traders from one RPO export file."""
 
     if max_records < 1:
         raise RpoSyncError("Limit importu musí byť aspoň 1.")
@@ -2794,6 +2883,8 @@ def import_rpo_sole_traders_export(
     session = build_http_session()
     response = None
     scanned = 0
+    active_sole_traders_scanned = 0
+    skipped_outside_target_focus = 0
     selected = 0
     upserted = 0
 
@@ -2818,6 +2909,11 @@ def import_rpo_sole_traders_export(
             if export_record.get("termination"):
                 continue
 
+            active_sole_traders_scanned += 1
+            if not matches_target_sole_trader_focus(export_record):
+                skipped_outside_target_focus += 1
+                continue
+
             selected += 1
             wrapped_record = {
                 "id": export_record.get("id"),
@@ -2838,8 +2934,12 @@ def import_rpo_sole_traders_export(
             "batch_date": batch_date,
             "file_number": file_number,
             "scanned": scanned,
+            "active_sole_traders_scanned": active_sole_traders_scanned,
+            "skipped_outside_target_focus": skipped_outside_target_focus,
             "selected_active_sole_traders": selected,
             "upserted": upserted,
+            "target_nace_prefixes": TARGET_SOLE_TRADER_NACE_PREFIXES,
+            "target_nace_codes": sorted(TARGET_SOLE_TRADER_NACE_CODES),
             "source_url": url,
         }
     except Exception:

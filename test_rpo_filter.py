@@ -2,6 +2,7 @@ import unittest
 
 from services.rpo_sync import (
     extract_source_register_name,
+    matches_target_sole_trader_focus,
     normalized_rpo_fields,
     should_skip_rpo_record,
 )
@@ -102,3 +103,77 @@ class RpoLegalFormFilterTests(unittest.TestCase):
             normalized["sk_nace_name"],
             "Elektroinštalačné práce",
         )
+
+
+class RpoSoleTraderTargetFocusTests(unittest.TestCase):
+    def test_accepts_main_construction_nace(self):
+        record = {
+            "statisticalCodes": {
+                "mainActivity": {"code": "43.21"},
+            },
+        }
+
+        self.assertTrue(matches_target_sole_trader_focus(record))
+
+    def test_rejects_low_signal_site_preparation_nace(self):
+        record = {
+            "statisticalCodes": {
+                "mainActivity": {"code": "43.12"},
+            },
+        }
+
+        self.assertFalse(matches_target_sole_trader_focus(record))
+
+    def test_accepts_related_technical_nace(self):
+        record = {
+            "statisticalCodes": {
+                "mainActivity": {"code": "71.12"},
+            },
+        }
+
+        self.assertTrue(matches_target_sole_trader_focus(record))
+
+    def test_accepts_current_electrical_secondary_activity(self):
+        record = {
+            "statisticalCodes": {
+                "mainActivity": {"code": "0240"},
+            },
+            "activities": [
+                {
+                    "economicActivityDescription": (
+                        "Inštalácia elektrických rozvodov a zariadení"
+                    ),
+                },
+            ],
+        }
+
+        self.assertTrue(matches_target_sole_trader_focus(record))
+
+    def test_ignores_expired_electrical_activity(self):
+        record = {
+            "statisticalCodes": {
+                "mainActivity": {"code": "5611"},
+            },
+            "activities": [
+                {
+                    "economicActivityDescription": "Elektroinštalácie",
+                    "validTo": "2025-01-01",
+                },
+            ],
+        }
+
+        self.assertFalse(matches_target_sole_trader_focus(record))
+
+    def test_rejects_unrelated_trade(self):
+        record = {
+            "statisticalCodes": {
+                "mainActivity": {"code": "5611"},
+            },
+            "activities": [
+                {
+                    "economicActivityDescription": "Reštauračné služby",
+                },
+            ],
+        }
+
+        self.assertFalse(matches_target_sole_trader_focus(record))

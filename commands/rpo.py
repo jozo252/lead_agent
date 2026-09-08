@@ -114,7 +114,10 @@ def sync_rpo_command(
     type=click.IntRange(min=1),
     default=10_000,
     show_default=True,
-    help="Maximálny počet aktívnych živnostníkov na import.",
+    help=(
+        "Maximálny počet aktívnych živnostníkov z elektro, stavebníctva "
+        "a príbuzných technických činností na import."
+    ),
 )
 @click.option(
     "--commit-every",
@@ -130,9 +133,12 @@ def import_rpo_sole_traders_command(
     max_records: int,
     commit_every: int,
 ) -> None:
-    """Import active sole traders from an official monthly RPO export."""
+    """Import target-sector active sole traders from an RPO export."""
 
-    click.echo("Importujem živnostníkov z oficiálneho exportu RPO...")
+    click.echo(
+        "Importujem cielených elektro a stavebných živnostníkov "
+        "z oficiálneho exportu RPO..."
+    )
     try:
         result = import_rpo_sole_traders_export(
             batch_date=batch_date.date().isoformat(),

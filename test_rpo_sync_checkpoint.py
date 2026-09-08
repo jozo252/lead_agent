@@ -188,6 +188,12 @@ class RpoSyncCheckpointTests(unittest.TestCase):
             "id": 1001,
             "identifiers": [{"value": "12345678"}],
             "fullNames": [{"value": "Ján Živnostník"}],
+            "statisticalCodes": {
+                "mainActivity": {
+                    "code": "4321",
+                    "value": "Elektroinštalačné práce",
+                }
+            },
             "legalForms": [
                 {
                     "value": {
@@ -214,8 +220,19 @@ class RpoSyncCheckpointTests(unittest.TestCase):
             "identifiers": [{"value": "12345670"}],
             "sourceRegister": {"value": {"value": "Obchodný register"}},
         }
+        unrelated_trader = {
+            **active_trader,
+            "id": 1004,
+            "identifiers": [{"value": "12345671"}],
+            "statisticalCodes": {
+                "mainActivity": {
+                    "code": "5611",
+                    "value": "Reštauračné činnosti",
+                }
+            },
+        }
         response = FakeExportResponse(
-            [active_trader, terminated_trader, company]
+            [active_trader, terminated_trader, company, unrelated_trader]
         )
         session = SimpleNamespace(
             get=Mock(return_value=response),
@@ -230,7 +247,9 @@ class RpoSyncCheckpointTests(unittest.TestCase):
             commit_every=1,
         )
 
-        self.assertEqual(result["scanned"], 3)
+        self.assertEqual(result["scanned"], 4)
+        self.assertEqual(result["active_sole_traders_scanned"], 2)
+        self.assertEqual(result["skipped_outside_target_focus"], 1)
         self.assertEqual(result["selected_active_sole_traders"], 1)
         self.assertEqual(result["upserted"], 1)
         self.assertEqual(Company.query.count(), 1)

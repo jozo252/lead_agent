@@ -2929,6 +2929,18 @@ def update_company_from_rpo(
     )
 
 
+def find_rpo_source(rpo_id: int) -> CompanySource | None:
+    """Find an RPO source through the selective external_id index."""
+
+    matches = CompanySource.query.filter_by(external_id=str(rpo_id)).all()
+    rpo_matches = [
+        source for source in matches if source.source_type == "rpo2"
+    ]
+    if len(rpo_matches) > 1:
+        raise RpoSyncError(f"Duplicitný RPO zdroj pre ID {rpo_id}.")
+    return rpo_matches[0] if rpo_matches else None
+
+
 def upsert_rpo_record(record: dict[str, Any]) -> Company:
     rpo_id = record.get("id")
 
@@ -2956,10 +2968,7 @@ def upsert_rpo_record(record: dict[str, Any]) -> Company:
     ico = normalized["ico"]
 
     # 1. Poznáme už presne tento RPO záznam?
-    source = CompanySource.query.filter_by(
-        source_type="rpo2",
-        external_id=str(rpo_id),
-    ).one_or_none()
+    source = find_rpo_source(rpo_id)
 
     if source is not None:
         company = source.company

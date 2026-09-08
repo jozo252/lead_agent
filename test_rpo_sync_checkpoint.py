@@ -9,12 +9,13 @@ from unittest.mock import Mock, patch
 from flask import Flask
 
 from extensions import db
-from models import Company, CompanyContact, SyncState
+from models import Company, CompanyContact, CompanySource, SyncState
 from services.rpo_sync import (
     RPO_SYNC_URL,
     SYNC_NAME,
     companies_for_contact_enrichment,
     create_initial_sync_url,
+    find_rpo_source,
     import_rpo_sole_traders_export,
     sync_rpo,
 )
@@ -241,6 +242,35 @@ class RpoSyncCheckpointTests(unittest.TestCase):
             stream=True,
         )
         session.close.assert_called_once()
+
+    def test_rpo_source_lookup_filters_same_external_id_by_source_type(self):
+        company = Company(ico="12345678", official_name="Test")
+        db.session.add(company)
+        db.session.flush()
+        db.session.add_all(
+            [
+                CompanySource(
+                    company_id=company.id,
+                    source_type="manual",
+                    source_id="same-id-manual",
+                    external_id="1001",
+                    raw_data={},
+                ),
+                CompanySource(
+                    company_id=company.id,
+                    source_type="rpo2",
+                    source_id="same-id-rpo",
+                    external_id="1001",
+                    raw_data={},
+                ),
+            ]
+        )
+        db.session.commit()
+
+        source = find_rpo_source(1001)
+
+        self.assertIsNotNone(source)
+        self.assertEqual(source.source_type, "rpo2")
 
 
 if __name__ == "__main__":

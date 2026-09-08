@@ -83,6 +83,12 @@ bez samostatnej zálohy a rozhodnutia o nových údajoch.
    Aktivácia AI kampane schvaľuje aj budúce automaticky pripravované denné dávky;
    nie je to len uloženie konceptu. Scheduler nainštalovať samostatne až po tomto kroku.
 
+Pre kampaň s ručne overeným pevným zoznamom nastav v AI zacielení režim
+**Odosielať iba vopred schválených príjemcov**. Uloží sa ako
+`selection_mode=approved_only`. Denný worker potom iba odčerpáva schválené záznamy,
+automaticky nehľadá náhrady a aktivácia sama neschváli pripravené koncepty. Každý
+príjemca aj jeho presný text preto musí byť schválený ešte pred aktiváciou.
+
 ## Prevádzkové príkazy
 
 Bezpečný náhľad nevolá SMTP/IMAP/Brave a nemení údaje:

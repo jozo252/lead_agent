@@ -53,6 +53,10 @@
                 <input type="checkbox" name="automation_enabled" {% if form and form.get('automation_enabled') %}checked{% endif %}>
                 AI automaticky vyberá a pripravuje denné dávky
             </label>
+            <label class="checkbox-field">
+                <input type="checkbox" name="approved_recipients_only" {% if form and form.get('approved_recipients_only') %}checked{% endif %}>
+                Odosielať iba vopred schválených príjemcov
+            </label>
         </div>
         <label>
             Cieľový segment a lokalita
@@ -100,7 +104,7 @@
                 <input type="number" name="contact_cooldown_days" min="0" max="3650" value="{{ form.get('contact_cooldown_days', 90) if form else 90 }}">
             </label>
         </div>
-        <p class="muted small">Automatická kampaň sa vytvorí ako koncept. Až jej aktivácia schváli budúce dávky na externé odosielanie.</p>
+        <p class="muted small">Automatická kampaň sa vytvorí ako koncept. Režim vopred schválených príjemcov bráni automatickému dopĺňaniu ďalších firiem.</p>
         <div class="form-actions">
             <button type="submit">Vytvoriť kampaň</button>
         </div>

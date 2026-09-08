@@ -327,6 +327,7 @@ class CampaignWorkflowTests(unittest.TestCase):
                 "offer_stage": "validation",
                 "offer_description": "AI recepčný pre autoservisy",
                 "automation_enabled": "on",
+                "approved_recipients_only": "on",
                 "target_hint": "menšie autoservisy",
                 "target_total": "50",
                 "batch_size": "10",
@@ -343,6 +344,7 @@ class CampaignWorkflowTests(unittest.TestCase):
         self.assertEqual(campaign.batch_size, 10)
         self.assertEqual(campaign.status, "draft")
         self.assertEqual(campaign.targeting_profile["nace_keywords"], ["45.20"])
+        self.assertEqual(campaign.targeting_profile["selection_mode"], "approved_only")
         self.assertIn("nejde ešte o hotový produkt", campaign.body_template)
         self.assertEqual(
             generate_plan.call_args.kwargs["campaign_name"],
@@ -370,6 +372,7 @@ class CampaignWorkflowTests(unittest.TestCase):
                 "company_keywords": ["administratíva"],
                 "minimum_fit_score": 60,
                 "target_hint": "",
+                "selection_mode": "approved_only",
             },
             target_total=10,
             batch_size=5,
@@ -405,6 +408,7 @@ class CampaignWorkflowTests(unittest.TestCase):
             campaign.targeting_profile["location_keywords"],
             ["Bratislava"],
         )
+        self.assertEqual(campaign.targeting_profile["selection_mode"], "approved_only")
         self.assertEqual(campaign.subject_template, "Otázka")
         self.assertEqual(
             generate_plan.call_args.kwargs["target_hint"],
@@ -515,6 +519,61 @@ class CampaignWorkflowTests(unittest.TestCase):
         self.assertTrue(all(recipient.approved_at for recipient in recipients))
         self.assertEqual(OutboundEmail.query.count(), 0)
 
+    def test_approved_only_activation_keeps_automatic_drafts_unapproved(self):
+        company = self.add_company(
+            "Salón Kontrola",
+            "41000004",
+            "05801",
+            "salon@example.com",
+            nace="9602",
+            municipality="Poprad",
+        )
+        campaign = Campaign(
+            name="Schválený salónový zoznam",
+            offer_type="service",
+            offer_stage="validation",
+            offer_description="Web a online objednávanie pre salóny",
+            subject_template="Online objednávanie",
+            body_template="Pripravujem riešenie pre salóny.",
+            status="draft",
+            automation_enabled=True,
+            targeting_profile={
+                "ideal_customer_profile": "Salóny v Poprade",
+                "nace_keywords": ["96.02"],
+                "company_keywords": ["salón"],
+                "minimum_fit_score": 60,
+                "selection_mode": "approved_only",
+            },
+            target_total=15,
+            batch_size=3,
+            daily_limit=6,
+            follow_up_days=7,
+            contact_cooldown_days=90,
+        )
+        recipient = CampaignRecipient(
+            campaign=campaign,
+            company=company,
+            contact=company.contacts[0],
+            recipient_email="salon@example.com",
+            subject="Online objednávanie",
+            body="Pripravujem riešenie pre salóny.",
+            selection_source="automation",
+            status="draft",
+        )
+        db.session.add_all([campaign, recipient])
+        db.session.commit()
+
+        activated = self.client.post(
+            f"/campaigns/{campaign.id}/status",
+            data={"status": "active"},
+        )
+
+        self.assertEqual(activated.status_code, 302)
+        self.assertEqual(campaign.status, "active")
+        self.assertEqual(recipient.status, "draft")
+        self.assertIsNone(recipient.approved_at)
+        self.assertEqual(OutboundEmail.query.count(), 0)
+
     @patch("services.campaign_automation.rank_campaign_candidates")
     def test_automation_selects_small_batch_sends_and_creates_leads(self, rank):
         first = self.add_company(
@@ -611,6 +670,55 @@ class CampaignWorkflowTests(unittest.TestCase):
 
         repeated = run_campaign_automation(campaign)
         self.assertIn("skipped", repeated)
+
+    @patch("services.campaign_automation.send_campaign_recipients")
+    @patch("services.campaign_automation.prepare_automated_recipients")
+    def test_approved_only_automation_never_prepares_new_recipients(
+        self,
+        prepare,
+        send,
+    ):
+        campaign = Campaign(
+            name="Vopred schválený zoznam",
+            offer_type="service",
+            offer_stage="validation",
+            offer_description="Rezervačný web pre salóny",
+            subject_template="Rezervácie",
+            body_template="Pripravujem návrh rezervácií.",
+            status="active",
+            automation_enabled=True,
+            targeting_profile={
+                "ideal_customer_profile": "Salóny v Poprade",
+                "nace_keywords": ["96.02"],
+                "company_keywords": ["salón"],
+                "minimum_fit_score": 60,
+                "selection_mode": "approved_only",
+            },
+            target_total=15,
+            batch_size=3,
+            daily_limit=6,
+            follow_up_days=7,
+            contact_cooldown_days=90,
+        )
+        db.session.add(campaign)
+        db.session.commit()
+        send.return_value = {
+            "sent": 0,
+            "failed": 0,
+            "suppressed": 0,
+            "unverified": 0,
+            "selected": 0,
+            "message": "Kampaň nemá schválených príjemcov.",
+            "locked": False,
+        }
+
+        result = run_campaign_automation(campaign)
+
+        prepare.assert_not_called()
+        send.assert_called_once()
+        self.assertEqual(send.call_args.args[1], 3)
+        self.assertEqual(result["prepared"]["mode"], "approved_only")
+        self.assertIn("vopred schválených", campaign.last_automation_error)
 
     @patch("services.campaign_automation.enrich_company_contacts")
     @patch("services.campaign_automation.rank_campaign_candidates")

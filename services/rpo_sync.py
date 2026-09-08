@@ -2672,18 +2672,46 @@ def request_page(
 ) -> Response:
     current_url = normalize_rpo_api_url(url)
     response = None
-    for redirect_number in range(4):
-        response = session.get(
-            current_url,
-            timeout=(10, 60),
-            allow_redirects=False,
-        )
-        if response.status_code not in {301, 302, 303, 307, 308}:
+    transient_errors = (
+        requests.exceptions.ChunkedEncodingError,
+        requests.exceptions.ConnectionError,
+        requests.exceptions.Timeout,
+    )
+
+    for request_attempt in range(3):
+        try:
+            for redirect_number in range(4):
+                response = session.get(
+                    current_url,
+                    timeout=(10, 60),
+                    allow_redirects=False,
+                )
+                if response.status_code not in {301, 302, 303, 307, 308}:
+                    break
+                location = response.headers.get("Location")
+                if not location or redirect_number == 3:
+                    raise RpoSyncError(
+                        "RPO API vrátilo neplatné alebo príliš dlhé presmerovanie."
+                    )
+                current_url = normalize_rpo_api_url(
+                    urljoin(current_url, location)
+                )
             break
-        location = response.headers.get("Location")
-        if not location or redirect_number == 3:
-            raise RpoSyncError("RPO API vrátilo neplatné alebo príliš dlhé presmerovanie.")
-        current_url = normalize_rpo_api_url(urljoin(current_url, location))
+        except transient_errors as exc:
+            if request_attempt == 2:
+                raise RpoSyncError(
+                    "RPO API opakovane prerušilo spojenie počas načítania stránky."
+                ) from exc
+
+            wait_seconds = 2 ** request_attempt
+            logger.warning(
+                "RPO request interrupted; retry=%s wait=%ss url=%s error=%s",
+                request_attempt + 1,
+                wait_seconds,
+                current_url,
+                type(exc).__name__,
+            )
+            time.sleep(wait_seconds)
 
     if response.status_code == 429:
         raise RpoSyncError(

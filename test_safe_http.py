@@ -4,6 +4,8 @@ from email.message import Message
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+import requests
+
 from services.safe_http import SafeHttpError, normalize_http_url, safe_http_get
 from services.rpo_sync import (
     RPO_BASE_URL,
@@ -246,6 +248,26 @@ class SafeHttpTests(unittest.TestCase):
             timeout=(10, 60),
             allow_redirects=False,
         )
+
+    @patch("services.rpo_sync.time.sleep")
+    def test_rpo_page_retries_incomplete_response_body(self, sleep):
+        response = SimpleNamespace(status_code=200, headers={}, ok=True)
+        session = SimpleNamespace(
+            get=Mock(
+                side_effect=[
+                    requests.exceptions.ChunkedEncodingError(
+                        "response ended prematurely"
+                    ),
+                    response,
+                ]
+            )
+        )
+
+        result = request_page(session, f"{RPO_BASE_URL}/api/data")
+
+        self.assertIs(result, response)
+        self.assertEqual(session.get.call_count, 2)
+        sleep.assert_called_once_with(1)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,10 @@
+import gzip
+import io
+import json
 import unittest
 from datetime import datetime, timezone
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from flask import Flask
 
@@ -11,6 +15,7 @@ from services.rpo_sync import (
     SYNC_NAME,
     companies_for_contact_enrichment,
     create_initial_sync_url,
+    import_rpo_sole_traders_export,
     sync_rpo,
 )
 
@@ -24,6 +29,29 @@ class FakeResponse:
 
 
 class FakeSession:
+    def close(self):
+        pass
+
+
+class ExportBytesIO(io.BytesIO):
+    pass
+
+
+class FakeExportResponse:
+    def __init__(self, records):
+        payload = (
+            '{"exportDate":"2026-09-05","results":[\n'
+            + "\n".join(
+                ("" if index == 0 else ",")
+                + json.dumps(record, ensure_ascii=False)
+                for index, record in enumerate(records)
+            )
+            + "\n]}"
+        )
+        self.raw = ExportBytesIO(gzip.compress(payload.encode("utf-8")))
+        self.ok = True
+        self.status_code = 200
+
     def close(self):
         pass
 
@@ -149,6 +177,70 @@ class RpoSyncCheckpointTests(unittest.TestCase):
 
         self.assertIn("since=", incremental_url)
         self.assertEqual(full_url, RPO_SYNC_URL)
+
+    @patch("services.rpo_sync.build_http_session")
+    def test_official_export_import_selects_only_active_sole_traders(
+        self,
+        build_session,
+    ):
+        active_trader = {
+            "id": 1001,
+            "identifiers": [{"value": "12345678"}],
+            "fullNames": [{"value": "Ján Živnostník"}],
+            "legalForms": [
+                {
+                    "value": {
+                        "value": (
+                            "Podnikateľ-fyzická osoba-nezapísaný "
+                            "v obchodnom registri"
+                        )
+                    }
+                }
+            ],
+            "sourceRegister": {
+                "value": {"value": "Živnostenský register"}
+            },
+        }
+        terminated_trader = {
+            **active_trader,
+            "id": 1002,
+            "identifiers": [{"value": "12345679"}],
+            "termination": "2025-01-01",
+        }
+        company = {
+            **active_trader,
+            "id": 1003,
+            "identifiers": [{"value": "12345670"}],
+            "sourceRegister": {"value": {"value": "Obchodný register"}},
+        }
+        response = FakeExportResponse(
+            [active_trader, terminated_trader, company]
+        )
+        session = SimpleNamespace(
+            get=Mock(return_value=response),
+            close=Mock(),
+        )
+        build_session.return_value = session
+
+        result = import_rpo_sole_traders_export(
+            batch_date="2026-09-05",
+            file_number=3,
+            max_records=10,
+            commit_every=1,
+        )
+
+        self.assertEqual(result["scanned"], 3)
+        self.assertEqual(result["selected_active_sole_traders"], 1)
+        self.assertEqual(result["upserted"], 1)
+        self.assertEqual(Company.query.count(), 1)
+        self.assertEqual(Company.query.one().ico, "12345678")
+        session.get.assert_called_once_with(
+            result["source_url"],
+            timeout=(10, 180),
+            allow_redirects=False,
+            stream=True,
+        )
+        session.close.assert_called_once()
 
 
 if __name__ == "__main__":

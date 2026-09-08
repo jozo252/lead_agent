@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import gzip
+import io
 import json
 import logging
 import time
@@ -29,6 +31,10 @@ load_dotenv()
 RPO_BASE_URL = "https://datahub.ekosystem.slovensko.digital"
 RPO_SYNC_URL = (
     f"{RPO_BASE_URL}/api/data/rpo2/organizations/sync"
+)
+RPO_EXPORT_BASE_URL = (
+    "https://frkqbrydxwdp.compat.objectstorage.eu-frankfurt-1."
+    "oraclecloud.com/susr-rpo/batch-init"
 )
 
 SYNC_NAME = "rpo2_organizations"
@@ -2722,6 +2728,127 @@ def request_page(
         raise RpoSyncError(f"RPO API vrátilo HTTP {response.status_code}.")
 
     return response
+
+
+def build_rpo_export_url(batch_date: str, file_number: int) -> str:
+    """Build a fixed-origin URL for one official monthly RPO export file."""
+
+    try:
+        normalized_date = date.fromisoformat(batch_date).isoformat()
+    except (TypeError, ValueError) as exc:
+        raise RpoSyncError("Neplatný dátum RPO exportu.") from exc
+
+    if not isinstance(file_number, int) or not 1 <= file_number <= 999:
+        raise RpoSyncError("Neplatné číslo súboru RPO exportu.")
+
+    return (
+        f"{RPO_EXPORT_BASE_URL}/"
+        f"init_{normalized_date}_{file_number:03d}.json.gz"
+    )
+
+
+def iter_rpo_export_records(response: Response):
+    """Stream records from one official line-delimited JSON gzip export."""
+
+    response.raw.decode_content = False
+    with gzip.GzipFile(fileobj=response.raw) as compressed:
+        with io.TextIOWrapper(compressed, encoding="utf-8") as source:
+            header = source.readline().strip()
+            if not header.startswith('{"exportDate"') or '"results":[' not in header:
+                raise RpoSyncError("RPO export má neznámy formát hlavičky.")
+
+            for line in source:
+                payload = line.strip()
+                if not payload or payload == "]}":
+                    continue
+
+                payload = payload.lstrip(",")
+                try:
+                    record = json.loads(payload)
+                except ValueError as exc:
+                    raise RpoSyncError(
+                        "RPO export obsahuje neplatný JSON záznam."
+                    ) from exc
+
+                if not isinstance(record, dict):
+                    raise RpoSyncError("RPO export obsahuje neplatný záznam.")
+
+                yield record
+
+
+def import_rpo_sole_traders_export(
+    *,
+    batch_date: str,
+    file_number: int,
+    max_records: int = 10_000,
+    commit_every: int = 100,
+) -> dict[str, Any]:
+    """Import active sole traders from one official monthly RPO export file."""
+
+    if max_records < 1:
+        raise RpoSyncError("Limit importu musí byť aspoň 1.")
+    if commit_every < 1:
+        raise RpoSyncError("Interval ukladania musí byť aspoň 1.")
+
+    url = build_rpo_export_url(batch_date, file_number)
+    session = build_http_session()
+    response = None
+    scanned = 0
+    selected = 0
+    upserted = 0
+
+    try:
+        response = session.get(
+            url,
+            timeout=(10, 180),
+            allow_redirects=False,
+            stream=True,
+        )
+        if response.status_code != 200:
+            raise RpoSyncError(
+                f"RPO export vrátil HTTP {response.status_code}."
+            )
+
+        for export_record in iter_rpo_export_records(response):
+            scanned += 1
+            if not is_trade_register(
+                extract_source_register_name({"data": export_record})
+            ):
+                continue
+            if export_record.get("termination"):
+                continue
+
+            selected += 1
+            wrapped_record = {
+                "id": export_record.get("id"),
+                "data": export_record,
+            }
+            if upsert_rpo_record(wrapped_record) is not None:
+                upserted += 1
+
+            if selected % commit_every == 0:
+                db.session.commit()
+
+            if selected >= max_records:
+                break
+
+        db.session.commit()
+        return {
+            "status": "success",
+            "batch_date": batch_date,
+            "file_number": file_number,
+            "scanned": scanned,
+            "selected_active_sole_traders": selected,
+            "upserted": upserted,
+            "source_url": url,
+        }
+    except Exception:
+        db.session.rollback()
+        raise
+    finally:
+        if response is not None:
+            response.close()
+        session.close()
 
 
 def fetch_record_detail(

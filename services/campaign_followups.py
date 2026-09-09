@@ -18,6 +18,7 @@ from models import (
 )
 from services.campaigns import (
     company_suppression_value, email_domain, ensure_opt_out_footer, is_suppressed,
+    ensure_campaign_privacy_disclosure,
     mark_campaign_recipient_replied, normalize_email, render_campaign_template,
 )
 from services.contact_selection import verified_contact_matches
@@ -253,6 +254,14 @@ def _gate(row):
         return "cancelled", "Príjemca odpovedal alebo bol zmenený jeho stav."
     if not verified_contact_matches(recipient.contact, recipient.recipient_email):
         return "cancelled", "Kontakt už nie je platný a overený."
+    if (campaign.targeting_profile or {}).get('salon_discovery') is True:
+        if (recipient.contact.source_type != 'salon_public_listing' or
+                not (campaign.targeting_profile or {}).get('privacy_notice_url')):
+            return 'blocked', 'Chýba verejný zdroj alebo informačná stránka salónovej kampane.'
+        try:
+            ensure_campaign_privacy_disclosure(row.body, campaign, recipient.contact)
+        except ValueError:
+            return 'blocked', 'Zdroj kontaktu alebo informačná stránka nie sú platné.'
     if normalize_email(original.recipient) != normalize_email(recipient.recipient_email):
         return "cancelled", "Adresa príjemcu sa zmenila."
     if campaign.require_no_website and not is_website_absence_eligible(recipient.company):
@@ -431,6 +440,12 @@ def run_due_followups(dry_run=True, campaign_id=None, limit=20):
                     sync_profile_inbox(row.sender_profile, since_datetime=row.original_outbound.sent_at)
                 except Exception:
                     outcome, reason = "blocked", "Úplná kontrola inboxu zlyhala."
+            if outcome is None and (campaign.targeting_profile or {}).get('salon_discovery') is True:
+                from services.salon_discovery import recheck_salon_contact
+                if not recheck_salon_contact(row.campaign_recipient.contact, campaign.targeting_profile.get('location_keywords', [])):
+                    outcome, reason = 'blocked', 'Aktuálny verejný kontakt a spôsob objednávania sa nepodarilo znovu overiť.'
+                else:
+                    db.session.commit()
             if outcome is None:
                 if not refresh_campaign_delivery_lock(campaign.id, token):
                     outcome, reason = "blocked", "Zámok kampane už vlastní iný proces."

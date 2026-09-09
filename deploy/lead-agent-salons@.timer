@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily salon discovery and outreach for campaign %i
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 08:30:00 Europe/Bratislava
+OnCalendar=Mon..Fri *-*-* 15:00:00 Europe/Bratislava
+AccuracySec=1min
+Persistent=false
+Unit=lead-agent-salons@%i.service
+
+[Install]
+WantedBy=timers.target

@@ -21,6 +21,7 @@ from models import (
 from services.campaigns import (
     company_suppression_value,
     email_domain,
+    ensure_campaign_privacy_disclosure,
     is_suppressed,
     normalize_email,
 )
@@ -254,6 +255,15 @@ def _send_campaign_recipients_locked(campaign, requested, lock_token):
     if issues:
         return _empty_result("Odosielanie nie je pripravené: " + " ".join(issues))
 
+    salon_campaign = (campaign.targeting_profile or {}).get('salon_discovery') is True
+    if salon_campaign:
+        if not (campaign.targeting_profile or {}).get('privacy_notice_url'):
+            return _empty_result('Chýba povinný odkaz na informácie o spracúvaní údajov.')
+        synced_at = getattr(campaign.sender_profile, 'last_synced_at', None)
+        if (synced_at is None or campaign.sender_profile.last_sync_error or
+                not timedelta(0) <= naive_utcnow() - synced_at.replace(tzinfo=None) <= timedelta(minutes=5)):
+            return _empty_result('Pred oslovením salónov treba úspešne skontrolovať schránku v posledných 5 minútach.')
+
     remaining = max(0, campaign.daily_limit - delivery_slots_used_today(campaign))
     send_count = min(max(int(requested), 0), remaining)
     if send_count == 0:
@@ -332,6 +342,28 @@ def _send_campaign_recipients_locked(campaign, requested, lock_token):
             if changed:
                 result["suppressed"] += 1
             continue
+
+        if salon_campaign:
+            contact = recipient.contact
+            checked_at = getattr(contact, 'last_verified_at', None)
+            if (contact is None or contact.source_type != 'salon_public_listing' or
+                    checked_at is None or not timedelta(0) <= naive_utcnow() - checked_at.replace(tzinfo=None) <= timedelta(days=7)):
+                recipient.status = 'draft'
+                recipient.approved_at = None
+                recipient.last_error = 'Chýba čerstvý verejný zdroj kontaktu salónu.'
+                db.session.commit()
+                result['unverified'] += 1
+                continue
+        if salon_campaign or 'privacy_notice_url' in (campaign.targeting_profile or {}):
+            try:
+                recipient.body = ensure_campaign_privacy_disclosure(recipient.body, campaign, recipient.contact)
+            except ValueError:
+                recipient.status = 'draft'
+                recipient.approved_at = None
+                recipient.last_error = 'Chýba platný zdroj kontaktu alebo informačná vrstva e-mailu.'
+                db.session.commit()
+                result['unverified'] += 1
+                continue
 
         safe_subject = normalize_email_subject(recipient.subject)
         safe_address = normalize_valid_email(recipient.recipient_email)

@@ -2,7 +2,7 @@ import unicodedata
 import logging
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import String, cast, func, or_
+from sqlalchemy import String, and_, cast, func, or_
 from sqlalchemy.orm import selectinload
 
 from extensions import db
@@ -17,6 +17,7 @@ from services.campaign_delivery import (
 from services.campaigns import (
     best_email_contact,
     clean_automated_outreach_body,
+    ensure_campaign_privacy_disclosure,
     ensure_opt_out_footer,
     ensure_validation_disclosure,
     is_suppressed,
@@ -25,6 +26,7 @@ from services.campaigns import (
 from services.rpo_sync import enrich_company_contacts
 from services.landing_pages import ensure_landing_page_link
 from services.email_addresses import normalize_email_subject, normalize_valid_email
+from services.contact_selection import select_email_contact
 from services.website_presence import (
     WEBSITE_CHECK_MAX_AGE_DAYS,
     is_website_absence_eligible,
@@ -104,8 +106,8 @@ def _local_fit_score(company, profile):
     return score, matched
 
 
-def campaign_candidates(campaign, limit):
-    return _campaign_candidates(campaign, limit)
+def campaign_candidates(campaign, limit, *, require_verified=False):
+    return _campaign_candidates(campaign, limit, require_verified=require_verified)
 
 
 def website_candidate_pool(campaign, limit=5):
@@ -116,7 +118,32 @@ def website_candidate_pool(campaign, limit=5):
     return _campaign_candidates(campaign, limit, website_check_pool=True)
 
 
-def _campaign_candidates(campaign, limit, *, website_check_pool=False):
+def _salon_contact_filter(now):
+    return and_(
+        func.lower(CompanyContact.contact_type) == "email",
+        CompanyContact.source_type == "salon_public_listing",
+        CompanyContact.is_verified.is_(True),
+        CompanyContact.last_verified_at >= now - timedelta(days=7),
+        CompanyContact.last_verified_at <= now,
+        CompanyContact.source_url.isnot(None),
+    )
+
+
+def _campaign_email_contact(campaign, company, *, require_verified=False):
+    contacts = company.contacts
+    if (campaign.targeting_profile or {}).get("salon_discovery") is True:
+        now = utcnow().replace(tzinfo=None)
+        contacts = [contact for contact in contacts if (
+            contact.source_type == "salon_public_listing"
+            and contact.is_verified and contact.source_url
+            and contact.last_verified_at is not None
+            and now - timedelta(days=7) <= contact.last_verified_at.replace(tzinfo=None) <= now
+        )]
+        require_verified = True
+    return select_email_contact(contacts, require_verified=require_verified)
+
+
+def _campaign_candidates(campaign, limit, *, website_check_pool=False, require_verified=False):
     profile = campaign.targeting_profile or {}
     if not profile.get("nace_keywords") and not profile.get("company_keywords"):
         raise ValueError("Kampaň nemá AI profil s použiteľnými kľúčovými slovami.")
@@ -147,6 +174,15 @@ def _campaign_candidates(campaign, limit, *, website_check_pool=False):
     excluded_ids = existing_ids | recently_contacted_ids
 
     query = Company.query.filter(Company.terminated_on.is_(None))
+    verified_email = Company.contacts.any(and_(
+        CompanyContact.contact_type.ilike("email"), CompanyContact.is_verified.is_(True),
+    ))
+    if profile.get("salon_discovery") is True:
+        query = query.filter(Company.contacts.any(_salon_contact_filter(utcnow().replace(tzinfo=None))))
+    elif require_verified:
+        # Checked unverified candidates cannot be sent and must not monopolize
+        # the same bounded pool every day. Unchecked firms can be enriched.
+        query = query.filter(or_(Company.contacts_checked_at.is_(None), verified_email))
     pool_ordering = []
     if website_check_pool:
         current = utcnow().replace(tzinfo=None)
@@ -233,6 +269,7 @@ def _campaign_candidates(campaign, limit, *, website_check_pool=False):
         )
         .order_by(
             *pool_ordering,
+            *([verified_email.desc()] if require_verified else []),
             email_exists.desc(),
             Company.outreach_relevant.desc(),
             Company.id,
@@ -247,7 +284,10 @@ def _campaign_candidates(campaign, limit, *, website_check_pool=False):
         if local_score <= 0:
             continue
         scored.append((local_score, len(matched), company.official_name or "", company))
-    scored.sort(key=lambda item: (-item[0], -item[1], item[2]))
+    scored.sort(key=lambda item: (
+        -(bool(_campaign_email_contact(campaign, item[3], require_verified=True))) if require_verified else 0,
+        -item[0], -item[1], item[2],
+    ))
     if website_check_pool:
         # Rotate past recently checked ambiguous results instead of paying to
         # search the same first five companies on every explicit batch click.
@@ -272,7 +312,9 @@ def prepare_automated_recipients(campaign, requested, recipient_status="approved
             "suppressed": 0,
         }
 
-    candidates = campaign_candidates(campaign, limit=max(30, requested * 5))
+    candidates = campaign_candidates(
+        campaign, limit=max(30, requested * 5), require_verified=recipient_status == "approved",
+    )
     if not candidates:
         return {
             "prepared": 0,
@@ -286,7 +328,16 @@ def prepare_automated_recipients(campaign, requested, recipient_status="approved
             "suppressed": 0,
         }
 
-    ranked = rank_campaign_candidates(campaign, candidates)
+    if (campaign.targeting_profile or {}).get('salon_discovery') is True:
+        # These candidates already passed the deterministic public-listing,
+        # locality, contact and booking checks. No LLM decides permission or copy.
+        ranked = [{
+            'company_id': company.id, 'fit_score': 90,
+            'fit_reason': 'Aktuálny verejný kontakt miestneho salónu s telefonickým alebo e-mailovým objednávaním.',
+            'subject': '', 'body': '',
+        } for company in candidates]
+    else:
+        ranked = rank_campaign_candidates(campaign, candidates)
     by_id = {company.id: company for company in candidates}
     minimum_score = int((campaign.targeting_profile or {}).get("minimum_fit_score", 60))
     result = {
@@ -314,8 +365,8 @@ def prepare_automated_recipients(campaign, requested, recipient_status="approved
             continue
 
         require_verified = recipient_status == "approved"
-        contact = best_email_contact(
-            company,
+        contact = _campaign_email_contact(
+            campaign, company,
             require_verified=require_verified,
         )
         if contact is None and company.contacts_checked_at is None:
@@ -325,8 +376,8 @@ def prepare_automated_recipients(campaign, requested, recipient_status="approved
                 include_existing=False,
             )
             company = db.session.get(Company, company.id)
-            contact = best_email_contact(
-                company,
+            contact = _campaign_email_contact(
+                campaign, company,
                 require_verified=require_verified,
             )
         # Contact enrichment may just have discovered an existing website.
@@ -344,25 +395,31 @@ def prepare_automated_recipients(campaign, requested, recipient_status="approved
             result["suppressed"] += 1
             continue
 
+        fixed_copy = (campaign.targeting_profile or {}).get("copy_mode") == "fixed_template"
         subject = normalize_email_subject(
-            assessment["subject"] or render_campaign_template(
+            (None if fixed_copy else assessment["subject"]) or render_campaign_template(
                 campaign.subject_template,
                 company,
+                email_source_url=contact.source_url,
             )
         )
         if subject is None:
             continue
-        body = assessment["body"] or render_campaign_template(
+        body = (None if fixed_copy else assessment["body"]) or render_campaign_template(
             campaign.body_template,
             company,
+            email_source_url=contact.source_url,
         )
-        body = clean_automated_outreach_body(
-            body,
-            company_name=company.official_name,
-        )
+        if not fixed_copy:
+            body = clean_automated_outreach_body(body, company_name=company.official_name)
         if campaign.offer_stage == "validation":
             body = ensure_validation_disclosure(body)
         body = ensure_landing_page_link(body, campaign)
+        try:
+            body = ensure_campaign_privacy_disclosure(body, campaign, contact)
+        except ValueError:
+            result["without_email"] += 1
+            continue
         db.session.add(
             CampaignRecipient(
                 campaign=campaign,

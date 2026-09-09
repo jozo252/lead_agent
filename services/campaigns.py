@@ -1,10 +1,13 @@
+import ipaddress
 import re
 import unicodedata
+from urllib.parse import urlsplit
 
 from sqlalchemy import and_, or_
 
 from models import CampaignRecipient, CompanyContact, OutboundEmail, Suppression
 from services.contact_selection import normalized_contact_email, select_email_contact
+from services.safe_http import normalize_http_url
 
 
 TEMPLATE_FIELDS = {
@@ -116,11 +119,68 @@ def best_email_contact(company, *, require_verified=False):
     )
 
 
-def render_campaign_template(template, company):
+def render_campaign_template(template, company, *, email_source_url=None):
     rendered = template or ""
     for placeholder, getter in TEMPLATE_FIELDS.items():
         rendered = rendered.replace(placeholder, getter(company))
+    if email_source_url is not None:
+        rendered = rendered.replace("{email_source_url}", email_source_url)
     return rendered.strip()
+
+
+def _public_disclosure_url(value):
+    """Validate a public link syntactically; never fetch recipient data here."""
+    normalized = normalize_http_url(value)
+    if not normalized or any(character.isspace() or character in "{}<>" for character in normalized):
+        return None
+    hostname = urlsplit(normalized).hostname.casefold()
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        address = None
+    if address is not None:
+        return normalized if address.is_global else None
+    if (
+        "." not in hostname
+        or hostname.rsplit(".", 1)[1].isdigit()
+        or hostname.endswith((".local", ".localhost", ".internal", ".invalid", ".test", ".localdomain"))
+        or any(not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label) for label in hostname.split("."))
+    ):
+        return None
+    return normalized
+
+
+def ensure_campaign_privacy_disclosure(body, campaign, contact):
+    """Append the approved first layer only for campaigns that explicitly opt in.
+
+    Source links come from the selected contact, never from AI-generated text.
+    The caller must skip delivery/preparation when validation raises ValueError.
+    """
+    profile = campaign.targeting_profile or {}
+    if "privacy_notice_url" not in profile:
+        return body
+    notice_url = _public_disclosure_url(profile.get("privacy_notice_url"))
+    source_url = _public_disclosure_url(getattr(contact, "source_url", None))
+    if not notice_url or not source_url:
+        raise ValueError("Kampaň vyžaduje verejnú informačnú stránku a presný verejný zdroj e-mailu.")
+    text = (body or "").replace("{email_source_url}", source_url).strip()
+    if re.search(r"\{[^{}\r\n]+\}|<\s*DOPLNI", text, re.IGNORECASE):
+        raise ValueError("Správa obsahuje nedoplnený placeholder.")
+    disclosure = (
+        "Vašu pracovnú e-mailovú adresu som získal z verejne dostupného firemného profilu prevádzky. "
+        f"Zdroj kontaktu: {source_url}. "
+        "Používam ju na toto obmedzené B2B oslovenie na základe oprávneného záujmu. "
+        f"Podrobnosti: {notice_url}. "
+        "Proti priamemu marketingu môžete kedykoľvek bezplatne namietať odpoveďou „neposielať“; "
+        "po námietke vám už marketingové správy neposielam."
+    )
+    if disclosure in text:
+        return text
+    had_footer = text.endswith(OPT_OUT_FOOTER)
+    if had_footer:
+        text = text[:-len(OPT_OUT_FOOTER)].rstrip()
+    text = f"{text}\n\n{disclosure}".strip()
+    return ensure_opt_out_footer(text) if had_footer else text
 
 
 def clean_automated_outreach_body(body, company_name=None):

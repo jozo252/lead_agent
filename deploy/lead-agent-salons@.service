@@ -1,0 +1,38 @@
+[Unit]
+Description=Lead Agent salon campaign %i
+Wants=network-online.target
+After=network-online.target lead_agent.service
+Requires=lead_agent.service
+
+[Service]
+Type=oneshot
+User=leadagent
+Group=leadagent
+WorkingDirectory=/home/adam/lead_agent
+Environment=APP_ENV=production
+Environment=PYTHONDONTWRITEBYTECODE=1
+# Change to --send only with the campaign's sending release approved.
+Environment=SALON_WORKER_MODE=--collect-only
+RuntimeDirectory=lead-agent-salons-%i
+RuntimeDirectoryMode=0700
+ExecStartPre=/usr/bin/test %i -gt 0
+ExecStart=/usr/bin/flock --exclusive --nonblock --conflict-exit-code=0 /run/lead-agent-salons-%i/worker.lock /opt/lead-agent/venvs/799be2d/bin/python -m flask --app wsgi run-salon-cycle --campaign-id %i ${SALON_WORKER_MODE}
+Restart=no
+TimeoutStartSec=20min
+TimeoutStopSec=30s
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/adam/lead_agent/instance
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

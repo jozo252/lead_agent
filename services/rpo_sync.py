@@ -39,7 +39,7 @@ RPO_EXPORT_BASE_URL = (
 
 SYNC_NAME = "rpo2_organizations"
 RPO_SOLE_TRADER_EXPORT_SYNC_NAME = "rpo2_sole_traders_export"
-RPO_SOLE_TRADER_FILTER_VERSION = 1
+RPO_SOLE_TRADER_FILTER_VERSION = 2
 
 
 class RpoSyncError(RuntimeError):
@@ -623,8 +623,12 @@ TARGET_SOLE_TRADER_NACE_CODES = {
 }
 
 TARGET_SOLE_TRADER_ACTIVITY_FRAGMENTS = (
-    "elektr",
-    "automatiz",
+    "elektroinstal",
+    "elektromont",
+    "elektrotech",
+    "elektroenerget",
+    "elektrikar",
+    "automatizac",
     "slabopr",
     "silnopr",
     "bleskozvod",
@@ -632,6 +636,25 @@ TARGET_SOLE_TRADER_ACTIVITY_FRAGMENTS = (
     "rozvadz",
     "rozvdz",  # tvar z verejného exportu s poškodenou diakritikou
     "meraniearegul",
+)
+
+TARGET_SOLE_TRADER_ELECTRICAL_WORK_FRAGMENTS = (
+    "montaz",
+    "instal",
+    "oprav",
+    "udrzb",
+    "rekonstruk",
+    "projekt",
+    "konstru",
+    "vyrob",
+    "servis",
+    "reviz",
+    "skus",
+    "meran",
+)
+
+TARGET_SOLE_TRADER_EXCLUDED_ACTIVITY_FRAGMENTS = (
+    "bezzasahudoelektroinstal",
 )
 
 
@@ -698,7 +721,17 @@ def matches_target_sole_trader_focus(record: dict[str, Any]) -> bool:
         )
         if any(
             fragment in description
+            for fragment in TARGET_SOLE_TRADER_EXCLUDED_ACTIVITY_FRAGMENTS
+        ):
+            continue
+        if any(
+            fragment in description
             for fragment in TARGET_SOLE_TRADER_ACTIVITY_FRAGMENTS
+        ):
+            return True
+        if "elektrick" in description and any(
+            fragment in description
+            for fragment in TARGET_SOLE_TRADER_ELECTRICAL_WORK_FRAGMENTS
         ):
             return True
         if (

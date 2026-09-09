@@ -167,6 +167,120 @@ class RpoSoleTraderTargetFocusTests(unittest.TestCase):
 
         self.assertTrue(matches_target_sole_trader_focus(record))
 
+    def test_accepts_current_industrial_automation_activity(self):
+        record = {
+            "statisticalCodes": {
+                "mainActivity": {"code": "6201"},
+            },
+            "activities": [
+                {
+                    "economicActivityDescription": (
+                        "Projektovanie priemyselnej automatizácie"
+                    ),
+                },
+            ],
+        }
+
+        self.assertTrue(matches_target_sole_trader_focus(record))
+
+    def test_rejects_automated_data_processing_activity(self):
+        record = {
+            "statisticalCodes": {
+                "mainActivity": {"code": "6209"},
+            },
+            "activities": [
+                {
+                    "economicActivityDescription": (
+                        "Automatizované spracovanie dát"
+                    ),
+                },
+            ],
+        }
+
+        self.assertFalse(matches_target_sole_trader_focus(record))
+
+    def test_rejects_electric_arc_welding_activity(self):
+        record = {
+            "statisticalCodes": {
+                "mainActivity": {"code": "2562"},
+            },
+            "activities": [
+                {
+                    "economicActivityDescription": (
+                        "Vykonávanie zváracích prác elektrickým oblúkom"
+                    ),
+                },
+            ],
+        }
+
+        self.assertFalse(matches_target_sole_trader_focus(record))
+
+    def test_rejects_electronic_data_consulting_activity(self):
+        record = {
+            "statisticalCodes": {
+                "mainActivity": {"code": "6202"},
+            },
+            "activities": [
+                {
+                    "economicActivityDescription": (
+                        "Poradenské služby ohľadne elektronických "
+                        "zariadení na spracovanie dát"
+                    ),
+                },
+            ],
+        }
+
+        self.assertFalse(matches_target_sole_trader_focus(record))
+
+    def test_rejects_electronics_installation_without_electrical_work(self):
+        record = {
+            "statisticalCodes": {
+                "mainActivity": {"code": "4712"},
+            },
+            "activities": [
+                {
+                    "economicActivityDescription": (
+                        "Montáž spotrebnej elektroniky "
+                        "(bez zásahu do elektroinštalácie)"
+                    ),
+                },
+            ],
+        }
+
+        self.assertFalse(matches_target_sole_trader_focus(record))
+
+    def test_rejects_rental_of_electrical_machines(self):
+        record = {
+            "statisticalCodes": {
+                "mainActivity": {"code": "7739"},
+            },
+            "activities": [
+                {
+                    "economicActivityDescription": (
+                        "Prenájom elektrických strojov a zariadení"
+                    ),
+                },
+            ],
+        }
+
+        self.assertFalse(matches_target_sole_trader_focus(record))
+
+    def test_accepts_repairs_of_electrical_machines(self):
+        record = {
+            "statisticalCodes": {
+                "mainActivity": {"code": "9522"},
+            },
+            "activities": [
+                {
+                    "economicActivityDescription": (
+                        "Opravy a údržba elektrických strojov a prístrojov"
+                    ),
+                },
+            ],
+        }
+
+        self.assertTrue(matches_target_sole_trader_focus(record))
+
     def test_ignores_expired_electrical_activity(self):
         record = {
             "statisticalCodes": {

@@ -157,3 +157,10 @@ class SalonCycleTests(unittest.TestCase):
         self.assertEqual(OutboundEmail.query.count(), 0)
         automation.assert_not_called()
         followups.assert_not_called()
+
+    @patch('services.campaign_followups.fetch_profile_messages', return_value=[])
+    def test_failed_search_does_not_consume_daily_search_attempt(self, fetch):
+        with patch('services.salon_discovery.discover_salon_contacts', return_value={'searched': 0, 'errors': ['search_unavailable']}):
+            result = run_salon_cycle(self.campaign.id, collect_only=True)
+        self.assertIn('error', result)
+        self.assertIsNone(self.campaign.last_scout_run_at)

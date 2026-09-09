@@ -45,11 +45,12 @@ def run_salon_cycle(campaign_id, *, send=False, collect_only=False):
             (campaign.last_scout_run_at is None or campaign.last_scout_run_at.date() != now.date())):
         from services.salon_discovery import discover_salon_contacts
         result['discovery'] = discover_salon_contacts(campaign, dry_run=False, limit=12)
-        campaign.last_scout_run_at = now
         campaign.last_scout_error = None
         if result['discovery']['searched'] == 0:
             campaign.last_scout_error = 'Verejné vyhľadávanie zlyhalo.'
             result['error'] = campaign.last_scout_error
+        else:
+            campaign.last_scout_run_at = now
         db.session.commit()
     if collect_only or result.get('error'):
         return result
@@ -64,4 +65,6 @@ def run_salon_cycle(campaign_id, *, send=False, collect_only=False):
         db.session.commit()
     if result['initials'].get('error'):
         result['error'] = 'Automatická dávka zlyhala; pozri stav kampane.'
+    elif (result['initials'].get('delivery') or {}).get('failed'):
+        result['error'] = 'Výsledok odoslania nie je potvrdený; skontroluj históriu kampane pred opakovaním.'
     return result

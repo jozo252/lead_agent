@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from urllib.parse import unquote, urljoin, urlsplit, urlunsplit
 
@@ -17,7 +17,7 @@ from bs4 import BeautifulSoup
 from sqlalchemy import func, or_
 
 from extensions import db
-from models import Company, CompanyContact, CompanySource, Lead, OutboundEmail
+from models import CampaignRecipient, Company, CompanyContact, CompanySource, Lead, OutboundEmail
 from services.campaigns import is_suppressed
 from services.contact_selection import normalized_contact_email
 from services.opportunity_scout import brave_web_search
@@ -319,10 +319,67 @@ def _duplicate_or_suppressed(candidate):
     return None
 
 
+def _stale_uncontacted_contact(contacts, now):
+    """Select one stale imported email; do not refresh manual or contacted data."""
+    emails = [item for item in contacts if _fold(item.contact_type) == "email"]
+    if len(emails) != 1:
+        return None
+    contact = emails[0]
+    if contact.source_type != SOURCE_TYPE or not contact.is_verified:
+        return None
+    checked_at = contact.last_verified_at
+    if checked_at is not None:
+        checked_at = checked_at.replace(tzinfo=timezone.utc) if checked_at.tzinfo is None else checked_at
+        if checked_at >= now - timedelta(days=6):
+            return None
+    address = normalized_contact_email(contact)
+    if not address or is_suppressed(contact.company, address):
+        return None
+    address = address.casefold()
+    matching_leads = db.session.query(Lead.id).filter(Lead.company_id == contact.company_id)
+    if OutboundEmail.query.filter(or_(
+        func.lower(func.trim(OutboundEmail.recipient)) == address,
+        OutboundEmail.lead_id.in_(matching_leads),
+    )).first():
+        return None
+    if Lead.query.filter(
+        or_(Lead.company_id == contact.company_id, func.lower(func.trim(Lead.email)) == address),
+        Lead.last_contacted_at.isnot(None),
+    ).first():
+        return None
+    if CampaignRecipient.query.filter(
+        or_(CampaignRecipient.company_id == contact.company_id,
+            func.lower(func.trim(CampaignRecipient.recipient_email)) == address),
+        or_(CampaignRecipient.sent_at.isnot(None), CampaignRecipient.replied_at.isnot(None),
+            CampaignRecipient.sending_started_at.isnot(None),
+            CampaignRecipient.status.in_(["sent", "sending", "replied", "unsubscribed"])),
+    ).first():
+        return None
+    return contact
+
+
+def _contact_snapshot(contact):
+    """A recheck may replace only snapshot fields during a dry-run."""
+    return SimpleNamespace(
+        company=SimpleNamespace(
+            official_name=contact.company.official_name,
+            municipality=contact.company.municipality,
+            # Recheck builds a new list without changing any nested evidence.
+            analysis_evidence=list(contact.company.analysis_evidence or []),
+        ),
+        source_type=contact.source_type, contact_type=contact.contact_type,
+        source_url=contact.source_url, value=contact.value,
+        is_verified=contact.is_verified, last_verified_at=contact.last_verified_at,
+    )
+
+
 def discover_salon_contacts(campaign, *, dry_run=True, search=None, fetch=None, limit=12):
     """Search <=6 municipalities and fetch <=12 pages. Caller commits explicitly.
 
-    ``dry_run=True`` never writes or mutates the campaign. Persist/retain returned
+    ``dry_run=True`` never writes or mutates ORM records; stale-contact rechecks
+    run against detached snapshots and only report ``refreshable``. Save runs
+    refresh previously imported, unsent emails older than six days within the
+    same fetch budget. Persist/retain returned
     ``state`` in last_run_summary['salon_discovery_state'] for rotation between
     runs. A write run also sets that key itself; callers replacing their summary
     must preserve it. Exceptions from providers are deliberately not serialized.
@@ -336,6 +393,7 @@ def discover_salon_contacts(campaign, *, dry_run=True, search=None, fetch=None, 
              if _source_url(key) and isinstance(value, str)}
     report = {"enabled": profile.get("salon_discovery") is True, "dry_run": dry_run,
               "searched": 0, "fetched": 0, "eligible": 0, "imported": 0,
+              "refreshed": 0, "refreshable": 0,
               "skipped": 0, "errors": [], "candidates": [], "state": state}
     if not report["enabled"]:
         return report
@@ -366,19 +424,57 @@ def discover_salon_contacts(campaign, *, dry_run=True, search=None, fetch=None, 
                     urls.append(url)
         except Exception:
             report["errors"].append("search_unavailable")
+    now = datetime.now(timezone.utc)
+    # Retain our own unsent queue even when a search engine stops returning its
+    # source. Revalidation still uses the same bounded public fetch budget.
+    with db.session.no_autoflush:
+        stale_candidates = CompanyContact.query.join(Company).filter(
+            CompanyContact.source_type == SOURCE_TYPE,
+            CompanyContact.contact_type == 'email', CompanyContact.is_verified.is_(True),
+            Company.municipality.in_(raw_locations),
+            or_(CompanyContact.last_verified_at.is_(None),
+                CompanyContact.last_verified_at < (now - timedelta(days=6)).replace(tzinfo=None)),
+        ).order_by(CompanyContact.last_verified_at, CompanyContact.id).limit(120).all()
+        stale_urls = []
+        for contact in stale_candidates:
+            if _stale_uncontacted_contact([contact], now) is not None:
+                url = _source_url(contact.source_url)
+                if url and url not in stale_urls:
+                    stale_urls.append(url)
+                if len(stale_urls) >= limit:
+                    break
+    urls = list(dict.fromkeys([*stale_urls, *urls]))
     # Fresh candidates first, then oldest checked. Failed pages cannot starve
     # later candidates on every run; rejected business data is never imported.
-    urls.sort(key=lambda url: (url in state, state.get(url, "")))
-    now = datetime.now(timezone.utc)
+    urls.sort(key=lambda url: (url not in stale_urls, url in state, state.get(url, "")))
     seen_emails = set()
     for url in urls:
         if report["fetched"] >= limit:
             break
         with db.session.no_autoflush:
-            existing = CompanyContact.query.filter(CompanyContact.source_url == url).first()
+            existing = CompanyContact.query.filter(CompanyContact.source_url == url).all()
             existing_source = CompanySource.query.filter(CompanySource.resource_url == url).first()
         if existing or existing_source:
-            report["skipped"] += 1
+            with db.session.no_autoflush:
+                stale = _stale_uncontacted_contact(existing, now)
+                refresh_target = _contact_snapshot(stale) if stale is not None and dry_run else stale
+            if refresh_target is None:
+                report["skipped"] += 1
+                continue
+            report["fetched"] += 1
+            state[url] = now.isoformat()
+            if recheck_salon_contact(refresh_target, raw_locations, fetch=fetch):
+                report["refreshable"] += 1
+                report["refreshed"] += int(not dry_run)
+                report["eligible"] += 1
+                refreshed_evidence = refresh_target.company.analysis_evidence[-1]
+                report["candidates"].append({key: refreshed_evidence[key] for key in (
+                    "name", "municipality", "street", "postal_code", "email", "source_url",
+                    "website_url", "name_kind", "booking_signal", "quote",
+                )})
+                seen_emails.add(refreshed_evidence["email"])
+            else:
+                report["errors"].append("source_recheck_failed")
             continue
         report["fetched"] += 1
         state[url] = now.isoformat()

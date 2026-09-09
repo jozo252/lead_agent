@@ -224,6 +224,112 @@ class SalonDiscoveryTests(unittest.TestCase):
         self.assertIn("invalid_locations", self.run_discovery()["errors"])
         self.search.assert_not_called()
 
+    def stale_contact(self):
+        self.assertEqual(self.run_discovery(dry_run=False)["imported"], 1)
+        contact = CompanyContact.query.filter_by(contact_type="email").one()
+        contact.last_verified_at = datetime.now() - timedelta(days=8)
+        old_evidence = dict(contact.company.analysis_evidence[0])
+        old_evidence["checked_at"] = contact.last_verified_at.isoformat()
+        contact.company.analysis_evidence = [old_evidence]
+        db.session.commit()
+        self.fetch.reset_mock()
+        return contact
+
+    def test_stale_unsent_import_is_refreshed_without_duplicate_company(self):
+        contact = self.stale_contact()
+        old_time = contact.last_verified_at
+        result = self.run_discovery(dry_run=False)
+        self.assertEqual(result["refreshed"], 1)
+        self.assertEqual(result["eligible"], 1)
+        self.assertEqual(result["fetched"], 1)
+        self.assertEqual(result["imported"], 0)
+        self.assertEqual(Company.query.count(), 1)
+        self.assertEqual(CompanyContact.query.count(), 1)
+        self.assertGreater(contact.last_verified_at, old_time)
+        self.assertGreater(contact.last_verified_at, datetime.now() - timedelta(days=7))
+        self.assertEqual(result["candidates"][0]["email"], contact.value)
+
+    def test_dry_run_live_rechecks_stale_snapshot_without_any_orm_mutation(self):
+        contact = self.stale_contact()
+        old_time = contact.last_verified_at
+        old_evidence = json.dumps(contact.company.analysis_evidence, sort_keys=True)
+        old_summary = json.dumps(self.campaign.last_run_summary, sort_keys=True)
+        result = self.run_discovery()
+        self.assertEqual(result["refreshable"], 1)
+        self.assertEqual(result["refreshed"], 0)
+        self.assertEqual(result["fetched"], 1)
+        self.assertEqual(contact.last_verified_at, old_time)
+        self.assertEqual(json.dumps(contact.company.analysis_evidence, sort_keys=True), old_evidence)
+        self.assertEqual(json.dumps(self.campaign.last_run_summary, sort_keys=True), old_summary)
+        self.assertFalse(db.session.new or db.session.dirty or db.session.deleted)
+
+    def test_stored_stale_source_is_rechecked_even_when_search_drops_it(self):
+        contact = self.stale_contact()
+        old_time = contact.last_verified_at
+        self.search.return_value = {'web': {'results': []}}
+        result = self.run_discovery(dry_run=False)
+        self.assertEqual(result['refreshed'], 1)
+        self.assertEqual(result['fetched'], 1)
+        self.assertGreater(contact.last_verified_at, old_time)
+        self.assertEqual(Company.query.count(), 1)
+
+    def test_stale_contacted_company_skips_refresh_even_for_other_email_address(self):
+        contact = self.stale_contact()
+        lead = Lead(company_name=contact.company.official_name, company_id=contact.company_id,
+                    email="old-address@salon-jp.sk")
+        db.session.add(lead)
+        db.session.flush()
+        db.session.add(OutboundEmail(lead_id=lead.id, recipient=lead.email, message_id="prior",
+                                     subject="Prior", body="Prior"))
+        db.session.commit()
+        result = self.run_discovery(dry_run=False)
+        self.assertEqual(result["refreshed"], 0)
+        self.fetch.assert_not_called()
+
+    def test_stale_suppressed_and_manual_contacts_skip_network_refresh(self):
+        contact = self.stale_contact()
+        suppression = Suppression(scope="company", value=str(contact.company_id))
+        db.session.add(suppression)
+        db.session.commit()
+        self.assertEqual(self.run_discovery(dry_run=False)["refreshed"], 0)
+        self.fetch.assert_not_called()
+        db.session.delete(suppression)
+        contact.source_type = "manual"
+        db.session.commit()
+        self.assertEqual(self.run_discovery(dry_run=False)["refreshed"], 0)
+        self.fetch.assert_not_called()
+
+    def test_stale_in_progress_recipient_skips_refresh(self):
+        contact = self.stale_contact()
+        db.session.add(CampaignRecipient(campaign_id=self.campaign.id, company_id=contact.company_id,
+                                         contact_id=contact.id, recipient_email=contact.value,
+                                         subject="Subject", body="Body", status="sending"))
+        db.session.commit()
+        self.assertEqual(self.run_discovery(dry_run=False)["refreshed"], 0)
+        self.fetch.assert_not_called()
+
+    def test_stale_refresh_shares_network_budget_with_new_discovery(self):
+        self.stale_contact()
+        self.campaign.last_run_summary = {}
+        db.session.commit()
+        self.search.return_value = {"web": {"results": [{"url": URL}, {"url": OWN_URL}]}}
+        result = self.run_discovery(dry_run=False, limit=1)
+        self.assertEqual(result["fetched"], 1)
+        self.assertEqual(result["refreshed"], 1)
+        self.assertEqual(result["imported"], 0)
+        self.assertEqual(self.fetch.call_count, 1)
+
+    def test_failed_stale_recheck_retains_old_contact_and_does_not_duplicate(self):
+        contact = self.stale_contact()
+        old_time = contact.last_verified_at
+        self.fetch.return_value = SimpleNamespace(status_code=403, url=URL, text="")
+        result = self.run_discovery(dry_run=False)
+        self.assertEqual(result["refreshed"], 0)
+        self.assertEqual(result["eligible"], 0)
+        self.assertEqual(result["errors"], ["source_recheck_failed"])
+        self.assertEqual(contact.last_verified_at, old_time)
+        self.assertEqual(Company.query.count(), 1)
+
 
 class SalonRecheckTests(unittest.TestCase):
     def setUp(self):

@@ -86,6 +86,26 @@ class AggregateCompanyContactsTests(unittest.TestCase):
             "ico_verified_email_domain",
         )
 
+    def test_public_email_domain_does_not_become_company_website(self):
+        results = [
+            {
+                "url": "https://register.example/remeselnik/48061999",
+                "title": "Elektroinštalácie Poprad, s.r.o.",
+                "description": (
+                    "Poprad, IČO: 48061999, "
+                    "elektroinstalaciepoprad@gmail.com"
+                ),
+            },
+        ]
+
+        aggregated = aggregate_company_contacts(self.company, results)
+
+        self.assertEqual(aggregated["websites"], [])
+        self.assertNotIn(
+            "https://gmail.com",
+            [item["value"] for item in aggregated["websites"]],
+        )
+
     def test_catalog_domain_is_not_treated_as_company_website(self):
         results = [
             {
@@ -184,10 +204,50 @@ class AggregateCompanyContactsTests(unittest.TestCase):
         self.assertEqual(selected, {})
 
     def test_known_business_directory_is_blocked(self):
-        self.assertTrue(
-            is_directory_domain(
-                "https://www.ifirmy.sk/firma/019636-optimetall-sro"
-            )
+        directory_urls = [
+            "https://www.ifirmy.sk/firma/019636-optimetall-sro",
+            "https://dodavatelia.123dopyt.sk/1734227-dusan-gazur-elektro-plyn",
+            "https://www.zlateruky.sk/remeselnik/12806-jozef-pecenadsky",
+            "http://dusan-gazur-elektro-plyn.trade.sk/",
+            "https://www.daibau.sk/zhotovitel/example",
+            "https://www.cylex.sk/example.html",
+            "https://www.industrycontact.sk/detail/example",
+            "https://www.aaadopyt.sk/dodavatelia/38",
+        ]
+
+        for url in directory_urls:
+            with self.subTest(url=url):
+                self.assertTrue(is_directory_domain(url))
+
+    def test_content_validated_directory_stays_unverified_candidate(self):
+        results = [
+            {
+                "url": "https://www.zlateruky.sk/remeselnik/12806-example",
+                "title": "Elektroinštalácie Poprad, s.r.o.",
+                "description": (
+                    "Poprad, IČO: 48061999, "
+                    "elektroinstalaciepoprad@gmail.com, 0903 628 912"
+                ),
+                "website_validated": True,
+                "website_ico_validated": True,
+            },
+        ]
+
+        aggregated = aggregate_company_contacts(self.company, results)
+        selected = select_best_company_contacts(
+            aggregated,
+            include_candidates=True,
+        )
+
+        self.assertEqual(aggregated["websites"], [])
+        self.assertNotIn("website", selected)
+        self.assertEqual(
+            selected["email"]["reason"],
+            "ico_match_unverified_source",
+        )
+        self.assertEqual(
+            selected["phone"]["reason"],
+            "ico_match_unverified_source",
         )
 
     def test_ico_matched_directory_contacts_are_saved_as_candidates(self):

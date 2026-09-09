@@ -1166,6 +1166,13 @@ VALIDATED_WEBSITE_MINIMUM_CONFIDENCE = 85
 UNVERIFIED_CONTACT_MINIMUM_CONFIDENCE = 40
 
 DIRECTORY_DOMAINS = {
+    "123dopyt.sk",
+    "aaadopyt.sk",
+    "cylex.sk",
+    "daibau.sk",
+    "industrycontact.sk",
+    "trade.sk",
+    "zlateruky.sk",
     "zoznam.sk",
     "zlatestranky.sk",
     "infoma.sk",
@@ -1207,6 +1214,24 @@ DIRECTORY_DOMAINS = {
     "ekariera.sk",
     "crz.minedu.sk",
     "rejstrik.penize.cz",
+}
+
+PUBLIC_EMAIL_DOMAINS = {
+    "centrum.sk",
+    "gmail.com",
+    "hotmail.com",
+    "icloud.com",
+    "live.com",
+    "mail.com",
+    "me.com",
+    "msn.com",
+    "outlook.com",
+    "pobox.sk",
+    "post.sk",
+    "proton.me",
+    "protonmail.com",
+    "seznam.cz",
+    "yahoo.com",
 }
 
 
@@ -2120,6 +2145,7 @@ def aggregate_company_contacts(company, results):
                     not is_blocked_domain(email_domain)
                     and not is_directory_domain(email_domain)
                     and not is_foreign_country_domain(email_domain)
+                    and email_domain not in PUBLIC_EMAIL_DOMAINS
                 ):
                     verified_email_domains.setdefault(
                         email_domain,

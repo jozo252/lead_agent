@@ -3029,6 +3029,7 @@ def import_rpo_sole_traders_batch(
     first_file: int = 1,
     last_file: int = 23,
     commit_every: int = 100,
+    max_records: int | None = None,
     resume: bool = True,
     should_stop: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
@@ -3042,6 +3043,8 @@ def import_rpo_sole_traders_batch(
         raise RpoSyncError("Neplatný rozsah súborov RPO exportu.")
     if commit_every < 1:
         raise RpoSyncError("Interval ukladania musí byť aspoň 1.")
+    if max_records is not None and max_records < 1:
+        raise RpoSyncError("Limit importu musí byť aspoň 1.")
 
     stop_requested = should_stop or (lambda: False)
     state = get_or_create_rpo_export_sync_state()
@@ -3096,6 +3099,24 @@ def import_rpo_sole_traders_batch(
     )
     db.session.commit()
 
+    if (
+        max_records is not None
+        and state.processed_records >= max_records
+    ):
+        state.status = "partial"
+        db.session.commit()
+        return {
+            "status": "partial",
+            "batch_date": normalized_date,
+            "first_file": first_file,
+            "last_file": last_file,
+            "max_records": max_records,
+            "fetched": state.fetched_records,
+            "imported": state.processed_records,
+            "skipped": state.skipped_records,
+            "checkpoint": parse_rpo_export_checkpoint(state.next_url),
+        }
+
     session = build_http_session()
     response = None
     records_since_commit = 0
@@ -3124,6 +3145,7 @@ def import_rpo_sole_traders_batch(
             "batch_date": normalized_date,
             "first_file": first_file,
             "last_file": last_file,
+            "max_records": max_records,
             "fetched": state.fetched_records,
             "imported": state.processed_records,
             "skipped": state.skipped_records,
@@ -3180,14 +3202,28 @@ def import_rpo_sole_traders_batch(
 
                 offset = position
                 records_since_commit += 1
-                if records_since_commit >= commit_every or stop_requested():
+                stop_now = stop_requested()
+                limit_reached = (
+                    max_records is not None
+                    and state.processed_records >= max_records
+                )
+                if (
+                    records_since_commit >= commit_every
+                    or stop_now
+                    or limit_reached
+                ):
+                    status = "running"
+                    if stop_now:
+                        status = "stopped"
+                    elif limit_reached:
+                        status = "partial"
                     result = save_checkpoint(
-                        status=("stopped" if stop_requested() else "running"),
+                        status=status,
                         file_number=file_number,
                         offset=offset,
                     )
                     records_since_commit = 0
-                    if result["status"] == "stopped":
+                    if result["status"] in {"stopped", "partial"}:
                         return result
 
             response.close()

@@ -361,6 +361,76 @@ class RpoSyncCheckpointTests(unittest.TestCase):
         self.assertTrue(repeated["already_completed"])
         self.assertEqual(build_session.call_count, 2)
 
+    @patch("services.rpo_sync.build_http_session")
+    def test_batch_import_stops_at_record_limit_and_can_continue(
+        self,
+        build_session,
+    ):
+        def trader(record_id, ico):
+            return {
+                "id": record_id,
+                "identifiers": [{"value": ico}],
+                "fullNames": [{"value": f"Živnostník {record_id}"}],
+                "legalForms": [
+                    {
+                        "value": {
+                            "value": (
+                                "Podnikateľ-fyzická osoba-nezapísaný "
+                                "v obchodnom registri"
+                            )
+                        }
+                    }
+                ],
+                "sourceRegister": {
+                    "value": {"value": "Živnostenský register"}
+                },
+                "statisticalCodes": {
+                    "mainActivity": {"code": "4321"}
+                },
+            }
+
+        records = [
+            trader(3001, "30000001"),
+            trader(3002, "30000002"),
+            trader(3003, "30000003"),
+        ]
+        first_session = SimpleNamespace(
+            get=Mock(return_value=FakeExportResponse(records)),
+            close=Mock(),
+        )
+        resumed_session = SimpleNamespace(
+            get=Mock(return_value=FakeExportResponse(records)),
+            close=Mock(),
+        )
+        build_session.side_effect = [first_session, resumed_session]
+
+        limited = import_rpo_sole_traders_batch(
+            batch_date="2026-09-05",
+            first_file=1,
+            last_file=1,
+            commit_every=100,
+            max_records=2,
+        )
+
+        self.assertEqual(limited["status"], "partial")
+        self.assertEqual(limited["imported"], 2)
+        self.assertEqual(limited["checkpoint"]["record_offset"], 2)
+        self.assertEqual(Company.query.count(), 2)
+
+        resumed = import_rpo_sole_traders_batch(
+            batch_date="2026-09-05",
+            first_file=1,
+            last_file=1,
+            commit_every=100,
+            max_records=3,
+        )
+
+        self.assertEqual(resumed["status"], "partial")
+        self.assertEqual(resumed["imported"], 3)
+        self.assertEqual(resumed["checkpoint"]["record_offset"], 3)
+        self.assertEqual(Company.query.count(), 3)
+        self.assertEqual(build_session.call_count, 2)
+
     def test_rpo_source_lookup_filters_same_external_id_by_source_type(self):
         company = Company(ico="12345678", official_name="Test")
         db.session.add(company)

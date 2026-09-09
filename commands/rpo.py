@@ -191,6 +191,12 @@ def import_rpo_sole_traders_command(
     help="Počet skontrolovaných záznamov medzi checkpointmi.",
 )
 @click.option(
+    "--max-records",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Zastaví dávku po tomto počte relevantných záznamov.",
+)
+@click.option(
     "--restart",
     is_flag=True,
     default=False,
@@ -202,6 +208,7 @@ def import_rpo_sole_traders_batch_command(
     first_file: int,
     last_file: int,
     commit_every: int,
+    max_records: int | None,
     restart: bool,
 ) -> None:
     """Import a resumable target-sector RPO batch."""
@@ -226,6 +233,7 @@ def import_rpo_sole_traders_batch_command(
             first_file=first_file,
             last_file=last_file,
             commit_every=commit_every,
+            max_records=max_records,
             resume=not restart,
             should_stop=stop_event.is_set,
         )

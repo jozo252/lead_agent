@@ -40,6 +40,8 @@ RPO_EXPORT_BASE_URL = (
 SYNC_NAME = "rpo2_organizations"
 RPO_SOLE_TRADER_EXPORT_SYNC_NAME = "rpo2_sole_traders_export"
 RPO_SOLE_TRADER_FILTER_VERSION = 2
+RPO_COMPANY_EXPORT_SYNC_NAME = "rpo2_companies_export"
+RPO_COMPANY_FILTER_VERSION = 1
 
 
 class RpoSyncError(RuntimeError):
@@ -3022,11 +3024,12 @@ def build_rpo_export_checkpoint(
     file_number: int,
     record_offset: int,
     completed: bool = False,
+    filter_version: int = RPO_SOLE_TRADER_FILTER_VERSION,
 ) -> str:
     return json.dumps(
         {
             "batch_date": batch_date,
-            "filter_version": RPO_SOLE_TRADER_FILTER_VERSION,
+            "filter_version": filter_version,
             "first_file": first_file,
             "last_file": last_file,
             "file_number": file_number,
@@ -3065,13 +3068,15 @@ def parse_rpo_export_checkpoint(value: Any) -> dict[str, Any] | None:
     return checkpoint
 
 
-def get_or_create_rpo_export_sync_state() -> SyncState:
+def get_or_create_rpo_export_sync_state(
+    sync_name: str = RPO_SOLE_TRADER_EXPORT_SYNC_NAME,
+) -> SyncState:
     state = SyncState.query.filter_by(
-        name=RPO_SOLE_TRADER_EXPORT_SYNC_NAME
+        name=sync_name
     ).one_or_none()
     if state is None:
         state = SyncState(
-            name=RPO_SOLE_TRADER_EXPORT_SYNC_NAME,
+            name=sync_name,
             status="idle",
             processed_records=0,
             fetched_records=0,
@@ -3082,8 +3087,11 @@ def get_or_create_rpo_export_sync_state() -> SyncState:
     return state
 
 
-def import_rpo_sole_traders_batch(
+def _import_rpo_filtered_batch(
     *,
+    sync_name: str,
+    filter_version: int,
+    is_target_record: Callable[[dict[str, Any]], bool],
     batch_date: str,
     first_file: int = 1,
     last_file: int = 23,
@@ -3092,7 +3100,7 @@ def import_rpo_sole_traders_batch(
     resume: bool = True,
     should_stop: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
-    """Import a resumable RPO batch and checkpoint every committed chunk."""
+    """Import a filtered resumable RPO batch with independent checkpointing."""
 
     try:
         normalized_date = date.fromisoformat(batch_date).isoformat()
@@ -3106,12 +3114,12 @@ def import_rpo_sole_traders_batch(
         raise RpoSyncError("Limit importu musí byť aspoň 1.")
 
     stop_requested = should_stop or (lambda: False)
-    state = get_or_create_rpo_export_sync_state()
+    state = get_or_create_rpo_export_sync_state(sync_name)
     checkpoint = parse_rpo_export_checkpoint(state.next_url)
 
     expected_checkpoint = {
         "batch_date": normalized_date,
-        "filter_version": RPO_SOLE_TRADER_FILTER_VERSION,
+        "filter_version": filter_version,
         "first_file": first_file,
         "last_file": last_file,
     }
@@ -3155,6 +3163,7 @@ def import_rpo_sole_traders_batch(
         last_file=last_file,
         file_number=current_file,
         record_offset=record_offset,
+        filter_version=filter_version,
     )
     db.session.commit()
 
@@ -3195,6 +3204,7 @@ def import_rpo_sole_traders_batch(
             file_number=file_number,
             record_offset=offset,
             completed=completed,
+            filter_version=filter_version,
         )
         if completed:
             state.last_successful_sync_at = utcnow()
@@ -3240,13 +3250,7 @@ def import_rpo_sole_traders_batch(
                     continue
 
                 state.fetched_records += 1
-                is_target = (
-                    is_trade_register(
-                        extract_source_register_name({"data": export_record})
-                    )
-                    and not export_record.get("termination")
-                    and matches_target_sole_trader_focus(export_record)
-                )
+                is_target = is_target_record(export_record)
                 if is_target:
                     wrapped_record = {
                         "id": export_record.get("id"),
@@ -3302,7 +3306,7 @@ def import_rpo_sole_traders_batch(
         )
     except Exception as exc:
         db.session.rollback()
-        state = get_or_create_rpo_export_sync_state()
+        state = get_or_create_rpo_export_sync_state(sync_name)
         state.status = "failed"
         state.last_error = f"{type(exc).__name__}: {exc}"
         db.session.commit()
@@ -3311,6 +3315,79 @@ def import_rpo_sole_traders_batch(
         if response is not None:
             response.close()
         session.close()
+
+
+def is_active_target_sole_trader_export_record(
+    record: dict[str, Any],
+) -> bool:
+    """Return True for active sole traders matching the current target filter."""
+
+    return (
+        is_trade_register(extract_source_register_name({"data": record}))
+        and not record.get("termination")
+        and matches_target_sole_trader_focus(record)
+    )
+
+
+def is_active_sro_export_record(record: dict[str, Any]) -> bool:
+    """Return True for active limited-liability companies in the RPO export."""
+
+    if not isinstance(record, dict) or record.get("termination"):
+        return False
+    normalized = normalized_rpo_fields({"data": record})
+    return is_sro_legal_form(normalized.get("legal_form"))
+
+
+def import_rpo_sole_traders_batch(
+    *,
+    batch_date: str,
+    first_file: int = 1,
+    last_file: int = 23,
+    commit_every: int = 100,
+    max_records: int | None = None,
+    resume: bool = True,
+    should_stop: Callable[[], bool] | None = None,
+) -> dict[str, Any]:
+    """Import target-sector active sole traders from a resumable RPO batch."""
+
+    return _import_rpo_filtered_batch(
+        sync_name=RPO_SOLE_TRADER_EXPORT_SYNC_NAME,
+        filter_version=RPO_SOLE_TRADER_FILTER_VERSION,
+        is_target_record=is_active_target_sole_trader_export_record,
+        batch_date=batch_date,
+        first_file=first_file,
+        last_file=last_file,
+        commit_every=commit_every,
+        max_records=max_records,
+        resume=resume,
+        should_stop=should_stop,
+    )
+
+
+def import_rpo_companies_batch(
+    *,
+    batch_date: str,
+    first_file: int = 1,
+    last_file: int = 23,
+    commit_every: int = 100,
+    max_records: int | None = None,
+    resume: bool = True,
+    should_stop: Callable[[], bool] | None = None,
+) -> dict[str, Any]:
+    """Import active s.r.o. companies from a resumable RPO batch."""
+
+    return _import_rpo_filtered_batch(
+        sync_name=RPO_COMPANY_EXPORT_SYNC_NAME,
+        filter_version=RPO_COMPANY_FILTER_VERSION,
+        is_target_record=is_active_sro_export_record,
+        batch_date=batch_date,
+        first_file=first_file,
+        last_file=last_file,
+        commit_every=commit_every,
+        max_records=max_records,
+        resume=resume,
+        should_stop=should_stop,
+    )
 
 
 def fetch_record_detail(

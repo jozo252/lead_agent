@@ -8,6 +8,7 @@ from flask.cli import with_appcontext
 from services.rpo_sync import (
     backfill_rpo_company_fields,
     enrich_company_contacts,
+    import_rpo_companies_batch,
     import_rpo_sole_traders_batch,
     import_rpo_sole_traders_export,
     sync_rpo,
@@ -229,6 +230,97 @@ def import_rpo_sole_traders_batch_command(
     )
     try:
         result = import_rpo_sole_traders_batch(
+            batch_date=batch_date.date().isoformat(),
+            first_file=first_file,
+            last_file=last_file,
+            commit_every=commit_every,
+            max_records=max_records,
+            resume=not restart,
+            should_stop=stop_event.is_set,
+        )
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
+    finally:
+        for signal_number, previous_handler in previous_handlers.items():
+            signal.signal(signal_number, previous_handler)
+
+    click.echo(
+        json.dumps(
+            result,
+            ensure_ascii=False,
+            indent=2,
+            default=str,
+        )
+    )
+
+
+@click.command("import-rpo-companies-batch")
+@click.option(
+    "--batch-date",
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    required=True,
+    help="Dátum mesačnej inicializačnej dávky RPO.",
+)
+@click.option(
+    "--first-file",
+    type=click.IntRange(min=1, max=999),
+    default=1,
+    show_default=True,
+    help="Prvý súbor dávky.",
+)
+@click.option(
+    "--last-file",
+    type=click.IntRange(min=1, max=999),
+    default=23,
+    show_default=True,
+    help="Posledný súbor dávky.",
+)
+@click.option(
+    "--commit-every",
+    type=click.IntRange(min=1),
+    default=100,
+    show_default=True,
+    help="Počet skontrolovaných záznamov medzi checkpointmi.",
+)
+@click.option(
+    "--max-records",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Zastaví dávku po tomto kumulatívnom počte aktívnych s. r. o.",
+)
+@click.option(
+    "--restart",
+    is_flag=True,
+    default=False,
+    help="Zahodí firemný exportový checkpoint a začne od prvého súboru.",
+)
+@with_appcontext
+def import_rpo_companies_batch_command(
+    batch_date,
+    first_file: int,
+    last_file: int,
+    commit_every: int,
+    max_records: int | None,
+    restart: bool,
+) -> None:
+    """Import active s.r.o. companies from a resumable RPO batch."""
+
+    stop_event = threading.Event()
+
+    def request_stop(_signum, _frame):
+        stop_event.set()
+
+    previous_handlers = {}
+    for signal_number in (signal.SIGINT, signal.SIGTERM):
+        previous_handlers[signal_number] = signal.getsignal(signal_number)
+        signal.signal(signal_number, request_stop)
+
+    click.echo(
+        "Spúšťam obnoviteľný import aktívnych s. r. o. z RPO. "
+        "Ctrl+C alebo SIGTERM uloží aktuálny checkpoint."
+    )
+    try:
+        result = import_rpo_companies_batch(
             batch_date=batch_date.date().isoformat(),
             first_file=first_file,
             last_file=last_file,

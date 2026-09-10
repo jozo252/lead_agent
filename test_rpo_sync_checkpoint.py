@@ -11,12 +11,14 @@ from flask import Flask
 from extensions import db
 from models import Company, CompanyContact, CompanySource, SyncState
 from services.rpo_sync import (
+    RPO_COMPANY_EXPORT_SYNC_NAME,
     RPO_SYNC_URL,
     RPO_SOLE_TRADER_EXPORT_SYNC_NAME,
     SYNC_NAME,
     companies_for_contact_enrichment,
     create_initial_sync_url,
     find_rpo_source,
+    import_rpo_companies_batch,
     import_rpo_sole_traders_batch,
     import_rpo_sole_traders_export,
     sync_rpo,
@@ -430,6 +432,78 @@ class RpoSyncCheckpointTests(unittest.TestCase):
         self.assertEqual(resumed["checkpoint"]["record_offset"], 3)
         self.assertEqual(Company.query.count(), 3)
         self.assertEqual(build_session.call_count, 2)
+
+    @patch("services.rpo_sync.build_http_session")
+    def test_company_batch_import_uses_separate_checkpoint_and_only_active_sro(
+        self,
+        build_session,
+    ):
+        def organization(record_id, ico, legal_form, register, termination=None):
+            return {
+                "id": record_id,
+                "identifiers": [{"value": ico}],
+                "fullNames": [{"value": f"Subjekt {record_id}"}],
+                "legalForms": [{"value": {"value": legal_form}}],
+                "sourceRegister": {"value": {"value": register}},
+                "termination": termination,
+            }
+
+        records = [
+            organization(
+                4001,
+                "40000001",
+                "Spoločnosť s ručením obmedzeným",
+                "Obchodný register",
+            ),
+            organization(
+                4002,
+                "40000002",
+                "Spoločnosť s ručením obmedzeným",
+                "Obchodný register",
+                termination="2025-01-01",
+            ),
+            organization(
+                4003,
+                "40000003",
+                "Podnikateľ-fyzická osoba-nezapísaný v obchodnom registri",
+                "Živnostenský register",
+            ),
+            organization(
+                4004,
+                "40000004",
+                "Akciová spoločnosť",
+                "Obchodný register",
+            ),
+        ]
+        session = SimpleNamespace(
+            get=Mock(return_value=FakeExportResponse(records)),
+            close=Mock(),
+        )
+        build_session.return_value = session
+
+        result = import_rpo_companies_batch(
+            batch_date="2026-09-05",
+            first_file=1,
+            last_file=1,
+            commit_every=2,
+        )
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["fetched"], 4)
+        self.assertEqual(result["imported"], 1)
+        self.assertEqual(result["skipped"], 3)
+        self.assertTrue(result["checkpoint"]["completed"])
+        self.assertEqual(Company.query.count(), 1)
+        self.assertEqual(Company.query.one().ico, "40000001")
+        company_state = SyncState.query.filter_by(
+            name=RPO_COMPANY_EXPORT_SYNC_NAME
+        ).one()
+        self.assertEqual(company_state.status, "success")
+        self.assertEqual(company_state.processed_records, 1)
+        self.assertIsNone(
+            SyncState.query.filter_by(name=RPO_SOLE_TRADER_EXPORT_SYNC_NAME).one_or_none()
+        )
+        session.close.assert_called_once()
 
     def test_rpo_source_lookup_filters_same_external_id_by_source_type(self):
         company = Company(ico="12345678", official_name="Test")

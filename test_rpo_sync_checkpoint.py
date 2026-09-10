@@ -15,13 +15,18 @@ from services.rpo_sync import (
     RPO_SYNC_URL,
     RPO_SOLE_TRADER_EXPORT_SYNC_NAME,
     SYNC_NAME,
+    TARGET_DELTA_SYNC_NAME,
+    build_rpo_export_checkpoint,
     companies_for_contact_enrichment,
     create_initial_sync_url,
     find_rpo_source,
+    get_or_create_target_delta_sync_state,
     import_rpo_companies_batch,
     import_rpo_sole_traders_batch,
     import_rpo_sole_traders_export,
     sync_rpo,
+    sync_target_rpo,
+    upsert_rpo_record,
 )
 
 
@@ -77,6 +82,55 @@ class RpoSyncCheckpointTests(unittest.TestCase):
         db.session.remove()
         db.drop_all()
         self.context.pop()
+
+    def add_completed_target_exports(self, batch_date="2026-09-05"):
+        for sync_name, filter_version in (
+            (RPO_COMPANY_EXPORT_SYNC_NAME, 1),
+            (RPO_SOLE_TRADER_EXPORT_SYNC_NAME, 2),
+        ):
+            db.session.add(
+                SyncState(
+                    name=sync_name,
+                    status="success",
+                    processed_records=1,
+                    fetched_records=1,
+                    skipped_records=0,
+                    next_url=build_rpo_export_checkpoint(
+                        batch_date=batch_date,
+                        filter_version=filter_version,
+                        first_file=1,
+                        last_file=23,
+                        file_number=24,
+                        record_offset=0,
+                        completed=True,
+                    ),
+                )
+            )
+        db.session.commit()
+
+    @staticmethod
+    def delta_record(
+        record_id,
+        ico,
+        *,
+        legal_form,
+        register,
+        nace="4321",
+        termination=None,
+    ):
+        return {
+            "id": record_id,
+            "data": {
+                "identifiers": [{"value": ico}],
+                "fullNames": [{"value": f"Subjekt {record_id}"}],
+                "legalForms": [{"value": {"value": legal_form}}],
+                "sourceRegister": {"value": {"value": register}},
+                "statisticalCodes": {
+                    "mainActivity": {"code": nace},
+                },
+                "termination": termination,
+            },
+        }
 
     @patch("services.rpo_sync.time.sleep")
     @patch("services.rpo_sync.upsert_rpo_record")
@@ -182,6 +236,137 @@ class RpoSyncCheckpointTests(unittest.TestCase):
 
         self.assertIn("since=", incremental_url)
         self.assertEqual(full_url, RPO_SYNC_URL)
+
+    def test_target_delta_checkpoint_uses_completed_export_with_safe_overlap(self):
+        self.add_completed_target_exports()
+
+        state = get_or_create_target_delta_sync_state()
+
+        self.assertEqual(state.name, TARGET_DELTA_SYNC_NAME)
+        self.assertEqual(
+            state.last_successful_sync_at,
+            datetime(2026, 9, 4),
+        )
+        self.assertIsNone(
+            SyncState.query.filter_by(name=SYNC_NAME).one_or_none()
+        )
+
+    @patch("services.rpo_sync.time.sleep")
+    @patch("services.rpo_sync.extract_next_url")
+    @patch("services.rpo_sync.request_page")
+    @patch("services.rpo_sync.build_http_session")
+    def test_target_delta_only_creates_active_entities_in_scope(
+        self,
+        build_session,
+        request_page,
+        extract_next_url,
+        sleep,
+    ):
+        self.add_completed_target_exports()
+        build_session.return_value = FakeSession()
+        request_page.return_value = FakeResponse(
+            [
+                self.delta_record(
+                    5001,
+                    "50000001",
+                    legal_form="Spoločnosť s ručením obmedzeným",
+                    register="Obchodný register",
+                ),
+                self.delta_record(
+                    5002,
+                    "50000002",
+                    legal_form=(
+                        "Podnikateľ-fyzická osoba-nezapísaný "
+                        "v obchodnom registri"
+                    ),
+                    register="Živnostenský register",
+                ),
+                self.delta_record(
+                    5003,
+                    "50000003",
+                    legal_form=(
+                        "Podnikateľ-fyzická osoba-nezapísaný "
+                        "v obchodnom registri"
+                    ),
+                    register="Živnostenský register",
+                    nace="5611",
+                ),
+                self.delta_record(
+                    5004,
+                    "50000004",
+                    legal_form="Spoločnosť s ručením obmedzeným",
+                    register="Obchodný register",
+                    termination="2026-09-06",
+                ),
+                self.delta_record(
+                    5005,
+                    "50000005",
+                    legal_form="Akciová spoločnosť",
+                    register="Obchodný register",
+                ),
+            ]
+        )
+        extract_next_url.return_value = None
+
+        result = sync_target_rpo(delay_seconds=0)
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["fetched"], 5)
+        self.assertEqual(result["imported"], 2)
+        self.assertEqual(result["skipped"], 3)
+        self.assertEqual(Company.query.count(), 2)
+        self.assertEqual(CompanySource.query.count(), 2)
+        self.assertEqual(
+            {company.ico for company in Company.query.all()},
+            {"50000001", "50000002"},
+        )
+        first_url = request_page.call_args.args[1]
+        self.assertIn("since=2026-09-04T00%3A00%3A00", first_url)
+
+    @patch("services.rpo_sync.time.sleep")
+    @patch("services.rpo_sync.extract_next_url")
+    @patch("services.rpo_sync.request_page")
+    @patch("services.rpo_sync.build_http_session")
+    def test_target_delta_updates_existing_entity_after_termination(
+        self,
+        build_session,
+        request_page,
+        extract_next_url,
+        sleep,
+    ):
+        self.add_completed_target_exports()
+        active_record = self.delta_record(
+            6001,
+            "60000001",
+            legal_form=(
+                "Podnikateľ-fyzická osoba-nezapísaný v obchodnom registri"
+            ),
+            register="Živnostenský register",
+        )
+        upsert_rpo_record(active_record)
+        db.session.commit()
+
+        terminated_record = self.delta_record(
+            6001,
+            "60000001",
+            legal_form="Akciová spoločnosť",
+            register="Obchodný register",
+            nace="5611",
+            termination="2026-09-07",
+        )
+        build_session.return_value = FakeSession()
+        request_page.return_value = FakeResponse([terminated_record])
+        extract_next_url.return_value = None
+
+        result = sync_target_rpo(delay_seconds=0)
+
+        company = Company.query.one()
+        self.assertEqual(result["imported"], 1)
+        self.assertEqual(result["skipped"], 0)
+        self.assertEqual(CompanySource.query.count(), 1)
+        self.assertEqual(company.status, "terminated")
+        self.assertEqual(company.terminated_on.isoformat(), "2026-09-07")
+        self.assertEqual(company.legal_form, "Akciová spoločnosť")
 
     @patch("services.rpo_sync.build_http_session")
     def test_official_export_import_selects_only_active_sole_traders(

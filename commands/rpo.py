@@ -11,7 +11,7 @@ from services.rpo_sync import (
     import_rpo_companies_batch,
     import_rpo_sole_traders_batch,
     import_rpo_sole_traders_export,
-    sync_rpo,
+    sync_target_rpo,
 )
 from services.company_web_enrichment import enrich_company_websites
 from services.ruz_financials import enrich_company_financials
@@ -59,8 +59,8 @@ from services.ruz_financials import enrich_company_financials
     is_flag=True,
     default=False,
     help=(
-        "Ignoruje lokálny checkpoint synchronizačného API. Na kompletný "
-        "historický export použite import-rpo-sole-traders."
+        "Ignoruje lokálny checkpoint cieleného synchronizačného API. "
+        "Na kompletný historický export použite samostatné exportné príkazy."
     ),
 )
 @with_appcontext
@@ -73,13 +73,13 @@ def sync_rpo_command(
     full_sync: bool,
 ) -> None:
     """
-    Synchronizuje firmy a živnostníkov z RPO V2.
+    Synchronizuje aktívne s. r. o. a cieľových živnostníkov z RPO V2.
     """
 
-    click.echo("Spúšťam RPO2 synchronizáciu...")
+    click.echo("Spúšťam cielenú RPO2 synchronizáciu...")
 
     try:
-        result = sync_rpo(
+        result = sync_target_rpo(
             max_records=max_records,
             only_ids=only_ids,
             commit_every=commit_every,

@@ -5,7 +5,7 @@ import io
 import json
 import logging
 import time
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from html import unescape
 from typing import Any, Callable
@@ -38,6 +38,7 @@ RPO_EXPORT_BASE_URL = (
 )
 
 SYNC_NAME = "rpo2_organizations"
+TARGET_DELTA_SYNC_NAME = "rpo2_target_delta_v2"
 RPO_SOLE_TRADER_EXPORT_SYNC_NAME = "rpo2_sole_traders_export"
 RPO_SOLE_TRADER_FILTER_VERSION = 2
 RPO_COMPANY_EXPORT_SYNC_NAME = "rpo2_companies_export"
@@ -143,12 +144,14 @@ def replace_company_activities(
             )
         )
         
-def get_or_create_sync_state() -> SyncState:
-    state = SyncState.query.filter_by(name=SYNC_NAME).one_or_none()
+def get_or_create_sync_state(
+    sync_name: str = SYNC_NAME,
+) -> SyncState:
+    state = SyncState.query.filter_by(name=sync_name).one_or_none()
 
     if state is None:
         state = SyncState(
-            name=SYNC_NAME,
+            name=sync_name,
             status="idle",
             processed_records=0,
             fetched_records=0,
@@ -3338,6 +3341,20 @@ def is_active_sro_export_record(record: dict[str, Any]) -> bool:
     return is_sro_legal_form(normalized.get("legal_form"))
 
 
+def is_active_target_delta_record(record: dict[str, Any]) -> bool:
+    """Allow new delta rows only when they belong to the imported target scope."""
+
+    if not isinstance(record, dict):
+        return False
+    payload = record.get("data")
+    if not isinstance(payload, dict):
+        return False
+    return (
+        is_active_sro_export_record(payload)
+        or is_active_target_sole_trader_export_record(payload)
+    )
+
+
 def import_rpo_sole_traders_batch(
     *,
     batch_date: str,
@@ -3480,7 +3497,11 @@ def find_rpo_source(rpo_id: int) -> CompanySource | None:
     return rpo_matches[0] if rpo_matches else None
 
 
-def upsert_rpo_record(record: dict[str, Any]) -> Company:
+def upsert_rpo_record(
+    record: dict[str, Any],
+    *,
+    targeted_delta: bool = False,
+) -> Company | None:
     rpo_id = record.get("id")
 
     if rpo_id is None:
@@ -3495,20 +3516,52 @@ def upsert_rpo_record(record: dict[str, Any]) -> Company:
 
     normalized = normalized_rpo_fields(record)
     source_register = extract_source_register_name(record)
+    source = find_rpo_source(rpo_id)
+
+    if (
+        targeted_delta
+        and source is None
+        and not is_active_target_delta_record(record)
+    ):
+        logger.info(
+            "Nový RPO delta záznam %s je mimo cieľového filtra.",
+            rpo_id,
+        )
+        return None
 
     if should_skip_rpo_record(normalized, source_register):
+        # Existujúci zdroj musíme aktualizovať aj po zániku alebo zmene
+        # právnej formy/registra. Zachováme tak históriu a kontakty, ale
+        # malformovaný záznam bez identity stále odmietneme.
+        can_update_existing = (
+            targeted_delta
+            and source is not None
+            and not should_skip_record(normalized)
+        )
+        if can_update_existing:
+            logger.info(
+                "RPO delta záznam %s aktualizuje existujúci zdroj mimo "
+                "aktuálne podporovaného typu.",
+                rpo_id,
+            )
+        else:
+            logger.info(
+                "RPO záznam %s sa ignoruje (právna forma=%r, register=%r).",
+                rpo_id,
+                normalized["legal_form"],
+                source_register,
+            )
+            return None
+
+    if should_skip_record(normalized):
         logger.info(
-            "RPO záznam %s sa ignoruje (právna forma=%r, register=%r).",
+            "RPO záznam %s sa ignoruje, pretože nemá použiteľnú identitu.",
             rpo_id,
-            normalized["legal_form"],
-            source_register,
         )
         return None
     ico = normalized["ico"]
 
     # 1. Poznáme už presne tento RPO záznam?
-    source = find_rpo_source(rpo_id)
-
     if source is not None:
         company = source.company
 
@@ -3614,6 +3667,77 @@ def create_initial_sync_url(
     return f"{RPO_SYNC_URL}?{'&'.join(params)}"
 
 
+def completed_target_export_baseline() -> datetime:
+    """Return a conservative UTC cutoff shared by both completed exports."""
+
+    expected_exports = (
+        (RPO_COMPANY_EXPORT_SYNC_NAME, RPO_COMPANY_FILTER_VERSION),
+        (RPO_SOLE_TRADER_EXPORT_SYNC_NAME, RPO_SOLE_TRADER_FILTER_VERSION),
+    )
+    batch_dates: set[str] = set()
+
+    for sync_name, filter_version in expected_exports:
+        state = SyncState.query.filter_by(name=sync_name).one_or_none()
+        if state is None or state.status != "success":
+            raise RpoSyncError(
+                f"RPO export {sync_name} nie je úspešne dokončený."
+            )
+        checkpoint = parse_rpo_export_checkpoint(state.next_url)
+        if (
+            checkpoint is None
+            or checkpoint.get("completed") is not True
+            or checkpoint.get("filter_version") != filter_version
+        ):
+            raise RpoSyncError(
+                f"RPO export {sync_name} nemá platný dokončený checkpoint."
+            )
+        batch_dates.add(str(checkpoint.get("batch_date") or ""))
+
+    if len(batch_dates) != 1:
+        raise RpoSyncError("RPO exporty nemajú rovnaký dátum dávky.")
+
+    batch_date_value = batch_dates.pop()
+    try:
+        parsed_date = date.fromisoformat(batch_date_value)
+    except ValueError as exc:
+        raise RpoSyncError("RPO export má neplatný dátum dávky.") from exc
+
+    # Export uvádza iba deň, nie presný cutoff. Jednodňový prekryv môže
+    # idempotentne zopakovať časť záznamov, ale nevytvorí časovú medzeru.
+    return datetime(
+        parsed_date.year,
+        parsed_date.month,
+        parsed_date.day,
+        tzinfo=timezone.utc,
+    ) - timedelta(days=1)
+
+
+def get_or_create_target_delta_sync_state() -> SyncState:
+    """Create an independent filtered-delta checkpoint from completed exports."""
+
+    state = SyncState.query.filter_by(
+        name=TARGET_DELTA_SYNC_NAME
+    ).one_or_none()
+    if state is None:
+        state = SyncState(
+            name=TARGET_DELTA_SYNC_NAME,
+            status="idle",
+            last_successful_sync_at=completed_target_export_baseline(),
+            processed_records=0,
+            fetched_records=0,
+            skipped_records=0,
+        )
+        db.session.add(state)
+        db.session.commit()
+        return state
+
+    if state.last_successful_sync_at is None and not state.next_url:
+        raise RpoSyncError(
+            "Cielený RPO delta checkpoint nemá bezpečný počiatočný bod."
+        )
+    return state
+
+
 def sync_rpo(
     *,
     max_records: int | None = None,
@@ -3622,6 +3746,8 @@ def sync_rpo(
     delay_seconds: float = 1.1,
     resume: bool = True,
     full_sync: bool = False,
+    sync_name: str = SYNC_NAME,
+    targeted_delta: bool = False,
 ) -> dict[str, Any]:
     """
     Synchronizuje RPO2 do lokálnej databázy.
@@ -3658,7 +3784,7 @@ def sync_rpo(
     if commit_every <= 0:
         raise ValueError("commit_every musí byť kladné číslo.")
 
-    state = get_or_create_sync_state()
+    state = get_or_create_sync_state(sync_name)
     session = build_http_session()
 
     current_run_started_at = utcnow()
@@ -3726,7 +3852,10 @@ def sync_rpo(
                     # Detail endpoint je ďalší request.
                     time.sleep(delay_seconds)
 
-                company = upsert_rpo_record(full_record)
+                company = upsert_rpo_record(
+                    full_record,
+                    targeted_delta=targeted_delta,
+                )
 
                 if company is None:
                     run_skipped += 1
@@ -3790,7 +3919,7 @@ def sync_rpo(
         db.session.rollback()
 
         # State získame znovu, pretože rollback mohol expirovať objekt.
-        state = get_or_create_sync_state()
+        state = get_or_create_sync_state(sync_name)
         state.status = "failed"
         state.last_error = (
             "RPO synchronizácia zlyhala. Podrobnosti sú v serverovom logu."
@@ -3804,5 +3933,29 @@ def sync_rpo(
 
     finally:
         session.close()
+
+
+def sync_target_rpo(
+    *,
+    max_records: int | None = None,
+    only_ids: bool = False,
+    commit_every: int = 100,
+    delay_seconds: float = 1.1,
+    resume: bool = True,
+    full_sync: bool = False,
+) -> dict[str, Any]:
+    """Synchronize only active target entities and lifecycle changes."""
+
+    get_or_create_target_delta_sync_state()
+    return sync_rpo(
+        max_records=max_records,
+        only_ids=only_ids,
+        commit_every=commit_every,
+        delay_seconds=delay_seconds,
+        resume=resume,
+        full_sync=full_sync,
+        sync_name=TARGET_DELTA_SYNC_NAME,
+        targeted_delta=True,
+    )
 
 

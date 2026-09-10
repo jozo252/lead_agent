@@ -44,7 +44,7 @@ class CampaignPrivacyTests(unittest.TestCase):
     def contact(self, name="Salon", *, verified=True, source="https://example.com/salon/kontakt", source_type="test", age=0):
         number = Company.query.count() + 1
         company = Company(
-            official_name=name, ico=str(10000000 + number), sk_nace_code="9602",
+            official_name=name, ico=str(10000000 + number), sk_nace_code="9602", municipality="Poprad",
             contacts_checked_at=datetime.now(timezone.utc),
         )
         contact = CompanyContact(
@@ -137,7 +137,8 @@ class CampaignPrivacyTests(unittest.TestCase):
         self.assertEqual(CampaignRecipient.query.one().contact_id, valid.id)
 
     def test_salon_mode_requires_fresh_observed_listing_contact(self):
-        self.campaign.targeting_profile = {**self.campaign.targeting_profile, "salon_discovery": True}
+        self.campaign.targeting_profile = {**self.campaign.targeting_profile, "salon_discovery": True,
+                                          "location_keywords": ["Poprad"]}
         self.contact("A Other source")
         self.contact("B Old source", source_type="salon_public_listing", age=8)
         self.contact("C Future date", source_type="salon_public_listing", age=-1)

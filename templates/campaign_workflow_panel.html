@@ -3,6 +3,16 @@
     <p>Odosielateľ: {% if campaign.sender_profile %}<strong>{{ campaign.sender_profile.name }}</strong> · {{ campaign.sender_profile.sender_email or 'adresa chýba' }}{% else %}Pôvodná globálna schránka (bez automatického follow-upu){% endif %} · <a href="{{ url_for('workflow.sender_profiles') }}">Spravovať tri profily</a></p>
     {% for issue in workflow_issues %}<p class="flash flash-warning">{{ issue }}</p>{% else %}<p>Konfiguračné kontroly sú splnené. Doručiteľnosť a prístupy treba ešte overiť testom schránky; tento stav sám nič neposiela.</p>{% endfor %}
     <p>Filter webu: {{ 'iba firmy s nedávnym výsledkom „web sa nenašiel“' if campaign.require_no_website else 'bez obmedzenia' }}. Follow-up: {{ 'jeden schválený, po ' ~ campaign.follow_up_days ~ ' dňoch' if campaign.follow_up_enabled else 'vypnutý' }}.</p>
+    {% if campaign.targeting_profile and campaign.targeting_profile.get('salon_discovery') %}
+    <p>Vyhľadávanie salónov: <strong>{{ campaign.targeting_profile.get('location_keywords', [])|join(', ') }}</strong>.</p>
+    {% if campaign.targeting_profile.get('salon_discovery_fallback_locations') %}
+    <p>Ak sa nenájdu nové vhodné kontakty, automaticky rozšíri hľadanie na <strong>{{ campaign.targeting_profile.get('salon_discovery_fallback_locations')|join(', ') }}</strong>.</p>
+    {% endif %}
+    {% set discovery = (campaign.last_run_summary or {}).get('salon_discovery_last_run') %}
+    {% if discovery %}
+    <p class="muted small">Posledné hľadanie: {{ discovery.get('fetched', 0) }} preverovaných stránok, {{ discovery.get('imported', 0) }} nových kontaktov. {% if discovery.get('fallback_used') %}Použilo sa aj širšie okolie.{% endif %}</p>
+    {% endif %}
+    {% endif %}
     <p class="muted small">Denný limit je spoločný pre prvé oslovenia aj pripomenutia. Pripomenutie vyžaduje čerstvú úplnú kontrolu odpovedí. Stav „unknown“ alebo „sending“ sa automaticky neopakuje. Scheduler musí byť spustený samostatne; nie je zapnutý uložením formulára.</p>
     {% if campaign.status in ['draft', 'paused'] %}
     <details><summary>Nastaviť schránku, overovanie webu a jedno pripomenutie</summary>

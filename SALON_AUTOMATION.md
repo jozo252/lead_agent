@@ -10,12 +10,20 @@ sa preskočia. Názov prevádzky sa neprezentuje ako overené obchodné meno ani
 ## Nastavenie pilotu
 
 - Existujúca kampaň 6, Poprad, Svit, Kežmarok.
+- Ak sa nenájde nový vhodný miestny kontakt ani čerstvý nepoužitý miestny kontakt
+  vo fronte, vyhľadávanie v tom istom behu pokračuje cez
+  `salon_discovery_fallback_locations`: Spišská Nová Ves, Levoča, Stará Ľubovňa.
+  Spoločný validátor povoľuje spolu najviac 6 obcí; rozšírenie platí aj pri
+  výbere príjemcov a následnom overení zdroja pred pripomenutím.
 - Najviac 15 prvých oslovení vrátane 6 historických, potom vyhodnotiť odpovede.
 - Denný spoločný limit 3 e-maily, najviac 3 nové kontakty v dávke.
 - Jeden follow-up 7 kalendárnych dní po úspešnom odoslaní; voľné denné miesto majú
   prednostne pripomenutia. Žiadne automatické ďalšie pripomenutie.
 - Po–Pi o 08:30 a 15:00 Europe/Bratislava. Bez doháňania po výpadku.
-- Vyhľadávanie najviac raz za UTC deň, najviac 12 načítaných stránok.
+- Vyhľadávanie najviac raz za UTC deň, najviac 12 stránok v pôvodnej oblasti
+  a ďalších 12 iba pri použití širšieho okolia. Výsledky obcí sa striedajú,
+  už overené zdroje rotujú a nepodporované adresáre nespotrebúvajú limit stránok.
+- Detail kampane ukazuje náhradné lokality a výsledok posledného vyhľadávania.
 - Limit 90 dní na nové oslovenie; už uložené e-maily/prevádzky sa neduplikujú.
 - Presný text, zdroj kontaktu, informačná stránka a možnosť odmietnuť správy sú
   doplnené klasickým kódom. LLM nemá právo meniť obsah ani rozhodnúť o odoslaní.
@@ -49,6 +57,10 @@ prehrať `scripts/configure_salon_pilot.py --database KOPIA --apply`, porovnať
 chránenú históriu a až potom použiť produkčnú databázu. Tento skript vždy nastaví
 iba zber kontaktov a neposiela. Odosielanie ostáva vypnuté do potvrdenia predmetu
 podnikania používateľom; samotná informačná stránka túto skutočnosť nepotvrdzuje.
+Pri úprave už bežiacej kampane tento konfiguračný skript znovu nespúšťať,
+pretože by odosielanie vypol. Použiť úzku ORM zmenu schválených nastavení.
+Pri jednorazovom rozšírení oblasti možno obnoviť dnešný prázdny pokus až po
+overení nulového počtu dnešných odosielacích pokusov; denné a celkové limity platia.
 
 ## Overenie
 

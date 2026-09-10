@@ -441,8 +441,8 @@ def run_due_followups(dry_run=True, campaign_id=None, limit=20):
                 except Exception:
                     outcome, reason = "blocked", "Úplná kontrola inboxu zlyhala."
             if outcome is None and (campaign.targeting_profile or {}).get('salon_discovery') is True:
-                from services.salon_discovery import recheck_salon_contact
-                if not recheck_salon_contact(row.campaign_recipient.contact, campaign.targeting_profile.get('location_keywords', [])):
+                from services.salon_discovery import recheck_salon_contact, salon_locations
+                if not recheck_salon_contact(row.campaign_recipient.contact, salon_locations(campaign.targeting_profile)):
                     outcome, reason = 'blocked', 'Aktuálny verejný kontakt a spôsob objednávania sa nepodarilo znovu overiť.'
                 else:
                     db.session.commit()

@@ -8,7 +8,7 @@ from flask import Flask
 
 from extensions import db
 from models import Campaign, CampaignFollowUp, CampaignRecipient, Company, CompanyContact, Lead, OutboundEmail, Suppression
-from services.salon_discovery import discover_salon_contacts, parse_salon_listing, recheck_salon_contact
+from services.salon_discovery import discover_salon_contacts, parse_salon_listing, recheck_salon_contact, salon_locations
 
 
 URL = "https://www.notino.sk/salony/salon-jp/"
@@ -96,6 +96,22 @@ class SalonParserTests(unittest.TestCase):
         self.assertEqual(result["municipality"], "Kežmarok")
         self.assertEqual(result["street"], "Starý trh 482/40")
         self.assertEqual(result["booking_signal"], "email_appointment_request")
+
+    def test_observed_city_is_canonicalized_to_validated_configured_spelling(self):
+        result = self.parse(page(city="KEZMAROK"))
+        self.assertEqual(result["municipality"], "Kežmarok")
+
+    def test_location_configuration_is_bounded_and_fails_closed(self):
+        profile = {"location_keywords": ["Poprad", "Kežmarok"],
+                   "salon_discovery_fallback_locations": ["KEZMAROK", "Levoča", "Spišská Nová Ves"]}
+        self.assertEqual(salon_locations(profile), ["Poprad", "Kežmarok", "Levoča", "Spišská Nová Ves"])
+        self.assertEqual(salon_locations(profile, include_fallback=False), ["Poprad", "Kežmarok"])
+        for invalid in [None, "Levoča", ["Levoča", "\nsearch"], ["  "],
+                        ["Levoča", "Svit", "Stará Ľubovňa", "Spišská Nová Ves", "Prešov"]]:
+            with self.subTest(invalid=invalid):
+                profile["salon_discovery_fallback_locations"] = invalid
+                self.assertEqual(salon_locations(profile), [])
+                self.assertEqual(salon_locations(profile, include_fallback=False), [])
 
 
 class SalonDiscoveryTests(unittest.TestCase):
@@ -224,6 +240,113 @@ class SalonDiscoveryTests(unittest.TestCase):
         self.assertIn("invalid_locations", self.run_discovery()["errors"])
         self.search.assert_not_called()
 
+    def enable_fallback(self):
+        self.campaign.targeting_profile = {
+            **self.campaign.targeting_profile,
+            "salon_discovery_fallback_locations": ["Levoča", "Spišská Nová Ves", "Stará Ľubovňa"],
+        }
+        db.session.commit()
+
+    def test_first_page_budget_is_interleaved_across_all_primary_towns(self):
+        cities = ["Poprad", "Svit", "Kežmarok"]
+        self.campaign.targeting_profile = {"salon_discovery": True, "location_keywords": cities}
+        self.search.side_effect = lambda query, **kwargs: {"web": {"results": [
+            {"url": f"https://salon-{cities.index(query.split(chr(34))[1])}-{number}.sk/"}
+            for number in range(20)
+        ]}}
+        self.fetch.side_effect = lambda url, **kwargs: SimpleNamespace(status_code=403, url=url, text="")
+        report = self.run_discovery(dry_run=False)
+        expected = [f"https://salon-{city}-{number}.sk/" for number in range(4) for city in range(3)]
+        self.assertEqual([call.args[0] for call in self.fetch.call_args_list], expected)
+        self.assertEqual(report["searched_locations"], cities)
+        self.assertEqual(report["fetched"], 12)
+
+    def test_new_primary_contact_prevents_fallback_queries(self):
+        self.enable_fallback()
+        report = self.run_discovery(dry_run=False)
+        self.assertEqual(report["imported"], 1)
+        self.assertFalse(report["fallback_used"])
+        self.assertEqual(report["searched_locations"], ["Poprad"])
+        self.assertEqual(self.search.call_count, 1)
+        self.assertEqual([tier["tier"] for tier in report["tiers"]], ["primary"])
+
+    def test_fresh_unused_primary_queue_prevents_fallback_even_when_search_drops_it(self):
+        self.assertEqual(self.run_discovery(dry_run=False)["imported"], 1)
+        self.enable_fallback()
+        self.search.return_value = {"web": {"results": []}}
+        self.search.reset_mock()
+        self.fetch.reset_mock()
+        report = self.run_discovery(dry_run=False)
+        self.assertEqual(report["eligible"], 0)
+        self.assertTrue(report["primary_queue_available"])
+        self.assertFalse(report["fallback_used"])
+        self.assertEqual(self.search.call_count, 1)
+        self.fetch.assert_not_called()
+
+    def test_empty_primary_pass_triggers_fallback_and_imports_only_its_configured_towns(self):
+        self.enable_fallback()
+        fallback_url = "https://www.notino.sk/salony/salon-levoca/"
+        self.search.side_effect = lambda query, **kwargs: {"web": {"results": (
+            [{"url": fallback_url}] if query.startswith('"Levoča"') else []
+        )}}
+        self.fetch.return_value = SimpleNamespace(status_code=200, url=fallback_url,
+                                                  text=page(url=fallback_url, city="Levoča"))
+        report = self.run_discovery(dry_run=False)
+        self.assertTrue(report["fallback_used"])
+        self.assertEqual(report["imported"], 1)
+        self.assertEqual(report["searched_locations"], ["Poprad", "Levoča", "Spišská Nová Ves", "Stará Ľubovňa"])
+        self.assertEqual([(tier["tier"], tier["imported"]) for tier in report["tiers"]],
+                         [("primary", 0), ("fallback", 1)])
+        self.assertEqual(Company.query.one().municipality, "Levoča")
+        self.assertEqual(self.campaign.targeting_profile["location_keywords"], ["Poprad"])
+        self.assertEqual(CampaignRecipient.query.count(), 0)
+        self.assertEqual(OutboundEmail.query.count(), 0)
+
+    def test_fallback_dry_run_retains_suppression_booking_and_locality_guards(self):
+        self.enable_fallback()
+        url = "https://www.notino.sk/salony/salon-levoca/"
+        self.search.side_effect = lambda query, **kwargs: {"web": {"results": (
+            [{"url": url}] if query.startswith('"Levoča"') else []
+        )}}
+        for html in [page(url=url, city="Levoča", extra="Rezervovať online"), page(url=url, city="Bratislava")]:
+            self.fetch.return_value = SimpleNamespace(status_code=200, url=url, text=html)
+            self.assertEqual(self.run_discovery()["eligible"], 0)
+        self.fetch.return_value.text = page(url=url, city="Levoča")
+        db.session.add(Suppression(scope="email", value="kontakt@salon-jp.sk"))
+        db.session.commit()
+        self.assertEqual(self.run_discovery()["eligible"], 0)
+        db.session.delete(Suppression.query.one())
+        db.session.commit()
+        report = self.run_discovery()
+        self.assertEqual(report["eligible"], 1)
+        self.assertEqual(report["imported"], 0)
+        self.assertEqual(Company.query.count(), 0)
+        self.assertIsNone(self.campaign.last_run_summary)
+        self.assertFalse(db.session.new or db.session.dirty or db.session.deleted)
+
+    def test_each_tier_has_its_own_twelve_page_cap_and_persists_rotation_state(self):
+        self.enable_fallback()
+        self.search.side_effect = lambda query, **kwargs: {"web": {"results": [
+            {"url": f"https://salon-{ord(query[1])}-{number}.sk/"} for number in range(20)
+        ]}}
+        self.fetch.side_effect = lambda url, **kwargs: SimpleNamespace(status_code=403, url=url, text="")
+        report = self.run_discovery(dry_run=False, limit=99)
+        self.assertEqual(report["fetched"], 24)
+        self.assertEqual([tier["fetched"] for tier in report["tiers"]], [12, 12])
+        self.assertEqual(report["searched"], 4)
+        self.assertEqual(self.campaign.last_run_summary["salon_discovery_state"], report["state"])
+        self.assertEqual(len(report["state"]), 24)
+
+    def test_known_unsupported_directories_are_excluded_before_fetch_budget(self):
+        directory_urls = ["https://poprad.oma.sk/salony", "https://vsetkyfirmy.sk/salon",
+                          "https://www.salony.sk/prevadzka", "https://orlykadernictva.eu/profile/1"]
+        self.search.return_value = {"web": {"results": [{"url": url} for url in [*directory_urls, URL]]}}
+        report = self.run_discovery(dry_run=False, limit=1)
+        self.assertEqual(report["skipped_directory"], 4)
+        self.assertEqual(report["fetched"], 1)
+        self.assertEqual(report["imported"], 1)
+        self.fetch.assert_called_once_with(URL, timeout=20, max_bytes=4_000_000)
+
     def stale_contact(self):
         self.assertEqual(self.run_discovery(dry_run=False)["imported"], 1)
         contact = CompanyContact.query.filter_by(contact_type="email").one()
@@ -248,6 +371,46 @@ class SalonDiscoveryTests(unittest.TestCase):
         self.assertGreater(contact.last_verified_at, old_time)
         self.assertGreater(contact.last_verified_at, datetime.now() - timedelta(days=7))
         self.assertEqual(result["candidates"][0]["email"], contact.value)
+
+    def test_successful_primary_refresh_prevents_fallback(self):
+        self.stale_contact()
+        self.enable_fallback()
+        self.search.return_value = {"web": {"results": []}}
+        report = self.run_discovery(dry_run=False)
+        self.assertEqual(report["refreshed"], 1)
+        self.assertFalse(report["primary_queue_available"])
+        self.assertFalse(report["fallback_used"])
+        self.assertEqual(report["searched_locations"], ["Poprad"])
+
+    def test_failed_primary_refresh_allows_fallback(self):
+        contact = self.stale_contact()
+        self.enable_fallback()
+        self.search.return_value = {"web": {"results": []}}
+        self.fetch.return_value = SimpleNamespace(status_code=403, url=URL, text="")
+        checked_at = contact.last_verified_at
+        report = self.run_discovery(dry_run=False)
+        self.assertEqual(report["refreshed"], 0)
+        self.assertFalse(report["primary_queue_available"])
+        self.assertTrue(report["fallback_used"])
+        self.assertEqual(report["searched"], 4)
+        self.assertEqual(contact.last_verified_at, checked_at)
+
+    def test_contacted_or_suppressed_primary_queue_does_not_prevent_fallback(self):
+        self.assertEqual(self.run_discovery(dry_run=False)["imported"], 1)
+        self.enable_fallback()
+        company = Company.query.one()
+        self.search.return_value = {"web": {"results": []}}
+        for record in [Suppression(scope="company", value=str(company.id)),
+                       CampaignRecipient(campaign_id=self.campaign.id, company_id=company.id,
+                                         recipient_email="kontakt@salon-jp.sk", subject="Sent", body="Sent",
+                                         status="sent", sent_at=datetime.now())]:
+            db.session.add(record)
+            db.session.commit()
+            report = self.run_discovery()
+            self.assertFalse(report["primary_queue_available"])
+            self.assertTrue(report["fallback_used"])
+            db.session.delete(record)
+            db.session.commit()
 
     def test_dry_run_live_rechecks_stale_snapshot_without_any_orm_mutation(self):
         contact = self.stale_contact()

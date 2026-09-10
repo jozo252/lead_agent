@@ -10,6 +10,7 @@ import json
 import re
 import unicodedata
 from datetime import datetime, timedelta, timezone
+from itertools import zip_longest
 from types import SimpleNamespace
 from urllib.parse import unquote, urljoin, urlsplit, urlunsplit
 
@@ -32,7 +33,8 @@ SALON_TYPES = {"BeautySalon", "HairSalon", "NailSalon", "DaySpa"}
 BOOKING_HOSTS = ("bookio", "reservio", "fresha", "booksy", "treatwell", "sumup",
                  "reenio", "rezervio", "timify", "simplybook", "reserva", "rezervo")
 DIRECTORY_HOSTS = {"facebook.com", "instagram.com", "azet.sk", "zlatestranky.sk",
-                   "firmy.sk", "google.com", "finstat.sk"}
+                   "firmy.sk", "google.com", "finstat.sk", "oma.sk",
+                   "vsetkyfirmy.sk", "salony.sk", "orlykadernictva.eu"}
 
 
 def _text(value):
@@ -42,6 +44,30 @@ def _text(value):
 def _fold(value):
     return "".join(c for c in unicodedata.normalize("NFKD", _text(value))
                    if not unicodedata.combining(c)).casefold()
+
+
+def salon_locations(profile, *, include_fallback=True):
+    """Return bounded primary/fallback municipalities, or [] for invalid config.
+
+    Sharing this with selection and source revalidation keeps the permitted
+    geography identical before import, initial delivery and follow-up delivery.
+    """
+    if not isinstance(profile, dict):
+        return []
+    primary = profile.get("location_keywords", [])
+    fallback = profile.get("salon_discovery_fallback_locations", [])
+    if (not isinstance(primary, list) or not primary or not isinstance(fallback, list)
+            or any(not isinstance(item, str) or not re.fullmatch(r"[\w .-]{2,60}", item)
+                   or not _text(item) for item in [*primary, *fallback])):
+        return []
+    locations = {}
+    for item in [*primary, *fallback]:
+        locations.setdefault(_fold(item), _text(item))
+    if len(locations) > MAX_LOCATIONS:
+        return []
+    if include_fallback:
+        return list(locations.values())
+    return list(dict.fromkeys(locations[_fold(item)] for item in primary))
 
 
 def _url(value):
@@ -64,6 +90,11 @@ def _notino(url):
     return _host(url) == "notino.sk"
 
 
+def _unsupported_directory(url):
+    host = _host(url)
+    return any(host == domain or host.endswith("." + domain) for domain in DIRECTORY_HOSTS)
+
+
 def _source_url(value):
     url = _url(value)
     if not url or len(url) > 1500:
@@ -73,7 +104,7 @@ def _source_url(value):
         if not re.fullmatch(r"/salony/[a-z0-9-]+/?", urlsplit(url).path):
             return None
         return "https://www.notino.sk" + urlsplit(url).path.rstrip("/") + "/"
-    if any(host == domain or host.endswith("." + domain) for domain in DIRECTORY_HOSTS):
+    if _unsupported_directory(url):
         return None
     if any(part in host for part in BOOKING_HOSTS):
         return None
@@ -241,7 +272,7 @@ def parse_salon_listing(html, source_url, location_keywords):
     if not evidence:
         return None
     return {
-        "name": name, "municipality": municipality, "street": street,
+        "name": name, "municipality": locations[_fold(municipality)], "street": street,
         "postal_code": postal_code or None, "email": email, "source_url": url,
         "website_url": None if directory else entity_url,
         "name_kind": "public_business_display_name", **evidence,
@@ -319,19 +350,14 @@ def _duplicate_or_suppressed(candidate):
     return None
 
 
-def _stale_uncontacted_contact(contacts, now):
-    """Select one stale imported email; do not refresh manual or contacted data."""
+def _uncontacted_salon_contact(contacts):
+    """Select one verified imported email with no suppression or contact history."""
     emails = [item for item in contacts if _fold(item.contact_type) == "email"]
     if len(emails) != 1:
         return None
     contact = emails[0]
     if contact.source_type != SOURCE_TYPE or not contact.is_verified:
         return None
-    checked_at = contact.last_verified_at
-    if checked_at is not None:
-        checked_at = checked_at.replace(tzinfo=timezone.utc) if checked_at.tzinfo is None else checked_at
-        if checked_at >= now - timedelta(days=6):
-            return None
     address = normalized_contact_email(contact)
     if not address or is_suppressed(contact.company, address):
         return None
@@ -358,6 +384,39 @@ def _stale_uncontacted_contact(contacts, now):
     return contact
 
 
+def _stale_uncontacted_contact(contacts, now):
+    """Select one stale imported email; do not refresh manual or contacted data."""
+    contact = _uncontacted_salon_contact(contacts)
+    if contact is None:
+        return None
+    checked_at = contact.last_verified_at
+    if checked_at is not None:
+        checked_at = checked_at.replace(tzinfo=timezone.utc) if checked_at.tzinfo is None else checked_at
+        if checked_at >= now - timedelta(days=6):
+            return None
+    return contact
+
+
+def _has_usable_local_queue(campaign, locations, now):
+    """A fresh, uncontacted local queue takes priority over wider discovery."""
+    contacts = CompanyContact.query.join(Company).filter(
+        CompanyContact.source_type == SOURCE_TYPE,
+        CompanyContact.contact_type == "email", CompanyContact.is_verified.is_(True),
+        Company.municipality.in_(locations), Company.terminated_on.is_(None),
+        CompanyContact.last_verified_at >= (now - timedelta(days=7)).replace(tzinfo=None),
+        CompanyContact.last_verified_at <= now.replace(tzinfo=None),
+    ).order_by(CompanyContact.id).limit(120).all()
+    for contact in contacts:
+        if not _source_url(contact.source_url) or _uncontacted_salon_contact(contact.company.contacts) is None:
+            continue
+        recipient = CampaignRecipient.query.filter_by(
+            campaign_id=campaign.id, company_id=contact.company_id,
+        ).first()
+        if recipient is None or recipient.status == "approved":
+            return True
+    return False
+
+
 def _contact_snapshot(contact):
     """A recheck may replace only snapshot fields during a dry-run."""
     return SimpleNamespace(
@@ -374,15 +433,12 @@ def _contact_snapshot(contact):
 
 
 def discover_salon_contacts(campaign, *, dry_run=True, search=None, fetch=None, limit=12):
-    """Search <=6 municipalities and fetch <=12 pages. Caller commits explicitly.
+    """Search primary towns first, then the configured fallback if none qualify.
 
-    ``dry_run=True`` never writes or mutates ORM records; stale-contact rechecks
-    run against detached snapshots and only report ``refreshable``. Save runs
-    refresh previously imported, unsent emails older than six days within the
-    same fetch budget. Persist/retain returned
-    ``state`` in last_run_summary['salon_discovery_state'] for rotation between
-    runs. A write run also sets that key itself; callers replacing their summary
-    must preserve it. Exceptions from providers are deliberately not serialized.
+    There are at most six municipalities and twelve fetches per tier (24 only
+    when fallback is needed). Fresh local queued contacts or newly discovered /
+    refreshed local contacts prevent fallback. Dry-runs never mutate ORM data.
+    Caller commits and retains the returned state for rotation between runs.
     """
     if not isinstance(dry_run, bool):
         raise ValueError("dry_run musí byť boolean.")
@@ -394,22 +450,58 @@ def discover_salon_contacts(campaign, *, dry_run=True, search=None, fetch=None, 
     report = {"enabled": profile.get("salon_discovery") is True, "dry_run": dry_run,
               "searched": 0, "fetched": 0, "eligible": 0, "imported": 0,
               "refreshed": 0, "refreshable": 0,
-              "skipped": 0, "errors": [], "candidates": [], "state": state}
+              "skipped": 0, "skipped_directory": 0, "errors": [], "candidates": [], "state": state,
+              "searched_locations": [], "fallback_used": False,
+              "primary_queue_available": False, "tiers": []}
     if not report["enabled"]:
         return report
-    raw_locations = profile.get("location_keywords", [])
-    if (not isinstance(raw_locations, list) or not raw_locations
-            or len(raw_locations) > MAX_LOCATIONS
-            or any(not isinstance(item, str) or not re.fullmatch(r"[\w .-]{2,60}", item)
-                   for item in raw_locations)):
+    primary = salon_locations(profile, include_fallback=False)
+    if not primary:
         report["errors"].append("invalid_locations")
         return report
     if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
         raise ValueError("limit musí byť kladné celé číslo.")
     limit = min(limit, MAX_FETCHES)
     search, fetch = search or brave_web_search, fetch or safe_http_get
-    urls = []
-    for location in dict.fromkeys(raw_locations):
+    primary_names = {_fold(item) for item in primary}
+    fallback = [item for item in salon_locations(profile) if _fold(item) not in primary_names]
+    now = datetime.now(timezone.utc)
+    if fallback:
+        with db.session.no_autoflush:
+            report["primary_queue_available"] = _has_usable_local_queue(campaign, primary, now)
+    seen_emails = set()
+    for tier_name, locations in [("primary", primary), ("fallback", fallback)]:
+        if not locations:
+            continue
+        if tier_name == "fallback":
+            if report["eligible"] or report["primary_queue_available"]:
+                break
+            report["fallback_used"] = True
+        tier = _discover_salon_tier(locations, dry_run=dry_run, search=search, fetch=fetch,
+                                   limit=limit, state=state, seen_emails=seen_emails, now=now)
+        report["tiers"].append({"tier": tier_name, **{
+            key: value for key, value in tier.items() if key != "candidates"
+        }})
+        for key in ("searched", "fetched", "eligible", "imported", "refreshed", "refreshable", "skipped",
+                    "skipped_directory"):
+            report[key] += tier[key]
+        for key in ("errors", "candidates", "searched_locations"):
+            report[key].extend(tier[key])
+    report["state"] = dict(sorted(state.items(), key=lambda pair: pair[1])[-MAX_STATE_URLS:])
+    if not dry_run:
+        campaign.last_run_summary = {**(campaign.last_run_summary or {}),
+                                     "salon_discovery_state": report["state"]}
+    return report
+
+
+def _discover_salon_tier(locations, *, dry_run, search, fetch, limit, state, seen_emails, now):
+    """One bounded pass; interleave towns before applying persisted rotation."""
+    report = {"locations": locations, "searched_locations": [],
+              "searched": 0, "fetched": 0, "eligible": 0, "imported": 0,
+              "refreshed": 0, "refreshable": 0, "skipped": 0, "skipped_directory": 0,
+              "errors": [], "candidates": []}
+    city_urls = []
+    for location in locations:
         # Fixed factual query; no LLM-generated search or arbitrary user commands.
         query = f'"{location}" salón kaderníctvo kozmetika kontakt email objednanie'
         try:
@@ -418,20 +510,27 @@ def discover_salon_contacts(campaign, *, dry_run=True, search=None, fetch=None, 
             if not isinstance(results, list):
                 raise ValueError("invalid_results")
             report["searched"] += 1
+            report["searched_locations"].append(location)
+            urls = []
             for result in results[:20]:
-                url = _source_url(result.get("url")) if isinstance(result, dict) else None
+                raw_url = _url(result.get("url")) if isinstance(result, dict) else None
+                if raw_url and _unsupported_directory(raw_url):
+                    report["skipped_directory"] += 1
+                    continue
+                url = _source_url(raw_url)
                 if url and url not in urls:
                     urls.append(url)
+            city_urls.append(urls)
         except Exception:
             report["errors"].append("search_unavailable")
-    now = datetime.now(timezone.utc)
+    urls = list(dict.fromkeys(url for row in zip_longest(*city_urls) for url in row if url))
     # Retain our own unsent queue even when a search engine stops returning its
     # source. Revalidation still uses the same bounded public fetch budget.
     with db.session.no_autoflush:
         stale_candidates = CompanyContact.query.join(Company).filter(
             CompanyContact.source_type == SOURCE_TYPE,
             CompanyContact.contact_type == 'email', CompanyContact.is_verified.is_(True),
-            Company.municipality.in_(raw_locations),
+            Company.municipality.in_(locations),
             or_(CompanyContact.last_verified_at.is_(None),
                 CompanyContact.last_verified_at < (now - timedelta(days=6)).replace(tzinfo=None)),
         ).order_by(CompanyContact.last_verified_at, CompanyContact.id).limit(120).all()
@@ -447,7 +546,6 @@ def discover_salon_contacts(campaign, *, dry_run=True, search=None, fetch=None, 
     # Fresh candidates first, then oldest checked. Failed pages cannot starve
     # later candidates on every run; rejected business data is never imported.
     urls.sort(key=lambda url: (url not in stale_urls, url in state, state.get(url, "")))
-    seen_emails = set()
     for url in urls:
         if report["fetched"] >= limit:
             break
@@ -463,7 +561,7 @@ def discover_salon_contacts(campaign, *, dry_run=True, search=None, fetch=None, 
                 continue
             report["fetched"] += 1
             state[url] = now.isoformat()
-            if recheck_salon_contact(refresh_target, raw_locations, fetch=fetch):
+            if recheck_salon_contact(refresh_target, locations, fetch=fetch):
                 report["refreshable"] += 1
                 report["refreshed"] += int(not dry_run)
                 report["eligible"] += 1
@@ -483,7 +581,7 @@ def discover_salon_contacts(campaign, *, dry_run=True, search=None, fetch=None, 
             final_url = _source_url(response.url)
             if response.status_code != 200 or not final_url or _host(final_url) != _host(url):
                 raise ValueError("source_unavailable")
-            candidate = parse_salon_listing(response.text, final_url, raw_locations)
+            candidate = parse_salon_listing(response.text, final_url, locations)
         except Exception:
             report["errors"].append("source_unavailable")
             continue
@@ -524,8 +622,4 @@ def discover_salon_contacts(campaign, *, dry_run=True, search=None, fetch=None, 
         db.session.add(company)
         db.session.flush()
         report["imported"] += 1
-    report["state"] = dict(sorted(state.items(), key=lambda pair: pair[1])[-MAX_STATE_URLS:])
-    if not dry_run:
-        campaign.last_run_summary = {**(campaign.last_run_summary or {}),
-                                     "salon_discovery_state": report["state"]}
     return report

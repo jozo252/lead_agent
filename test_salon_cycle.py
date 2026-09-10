@@ -80,6 +80,7 @@ class SalonCycleTests(unittest.TestCase):
             self.assertEqual(CampaignFollowUp.query.count(), 2)
             self.assertEqual(self.campaign.status, 'active')
             self.assertIn('salon_discovery_state', self.campaign.last_run_summary)
+            self.assertEqual(self.campaign.last_run_summary['salon_discovery_last_run']['imported'], 2)
             for reminder in CampaignFollowUp.query.all():
                 self.assertEqual(reminder.due_at - reminder.original_outbound.sent_at, timedelta(days=7))
                 reminder.due_at = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=1)
@@ -164,3 +165,46 @@ class SalonCycleTests(unittest.TestCase):
             result = run_salon_cycle(self.campaign.id, collect_only=True)
         self.assertIn('error', result)
         self.assertIsNone(self.campaign.last_scout_run_at)
+
+    @patch('services.campaign_delivery.send_profile_message')
+    @patch('services.campaign_followups.send_profile_message')
+    @patch('services.campaign_followups.fetch_profile_messages', return_value=[])
+    def test_fallback_contact_can_receive_initial_and_revalidated_followup(self, fetch, follow_send, initial_send):
+        self.campaign.targeting_profile = {
+            **self.campaign.targeting_profile,
+            'salon_discovery_fallback_locations': ['Levoča'],
+        }
+        self.campaign.target_total = 1
+        db.session.commit()
+
+        def discover_wider(campaign, **kwargs):
+            company = Company(official_name='Salon Levoča', municipality='Levoča', contacts_checked_at=datetime.now())
+            db.session.add(CompanyContact(company=company, contact_type='email', value='salon@levoca.example.com',
+                                         source_type='salon_public_listing', source_url='https://salon-levoca.sk/kontakt/',
+                                         is_verified=True, last_verified_at=datetime.now(timezone.utc)))
+            db.session.flush()
+            return {'searched': 2, 'imported': 1, 'eligible': 1, 'fallback_used': True,
+                    'searched_locations': ['Poprad', 'Levoča']}
+
+        with patch('services.salon_discovery.discover_salon_contacts', side_effect=discover_wider):
+            first = run_salon_cycle(self.campaign.id, send=True)
+        self.assertEqual(first['sent'], 1)
+        self.assertTrue(self.campaign.last_run_summary['salon_discovery_last_run']['fallback_used'])
+        reminder = CampaignFollowUp.query.one()
+        self.assertEqual(reminder.due_at - reminder.original_outbound.sent_at, timedelta(days=7))
+        reminder.due_at = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=1)
+        db.session.commit()
+        with patch('services.salon_discovery.recheck_salon_contact', return_value=True) as recheck:
+            second = run_salon_cycle(self.campaign.id, send=True)
+        self.assertEqual(second['followups']['sent'], 1)
+        self.assertEqual(recheck.call_args.args[1], ['Poprad', 'Levoča'])
+        self.assertEqual(initial_send.call_count, 1)
+        self.assertEqual(follow_send.call_count, 1)
+
+    def test_invalid_salon_locations_do_not_select_across_all_regions(self):
+        from services.campaign_automation import campaign_candidates
+        self.discover(self.campaign)
+        self.campaign.targeting_profile = {**self.campaign.targeting_profile,
+                                          'salon_discovery_fallback_locations': 'all regions'}
+        db.session.commit()
+        self.assertEqual(campaign_candidates(self.campaign, 3, require_verified=True), [])

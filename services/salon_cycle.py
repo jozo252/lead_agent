@@ -45,6 +45,14 @@ def run_salon_cycle(campaign_id, *, send=False, collect_only=False):
             (campaign.last_scout_run_at is None or campaign.last_scout_run_at.date() != now.date())):
         from services.salon_discovery import discover_salon_contacts
         result['discovery'] = discover_salon_contacts(campaign, dry_run=False, limit=12)
+        campaign.last_run_summary = {
+            **(campaign.last_run_summary or {}),
+            'salon_discovery_last_run': {
+                'checked_at': now.isoformat(),
+                **{key: value for key, value in result['discovery'].items()
+                   if key not in {'state', 'candidates'}},
+            },
+        }
         campaign.last_scout_error = None
         if result['discovery']['searched'] == 0:
             campaign.last_scout_error = 'Verejné vyhľadávanie zlyhalo.'
@@ -54,14 +62,15 @@ def run_salon_cycle(campaign_id, *, send=False, collect_only=False):
         db.session.commit()
     if collect_only or result.get('error'):
         return result
-    discovery_state = (campaign.last_run_summary or {}).get('salon_discovery_state')
+    discovery_summary = {key: value for key, value in (campaign.last_run_summary or {}).items()
+                         if key in {'salon_discovery_state', 'salon_discovery_last_run'}}
     # Public searches can take minutes. Refresh immediately before the daily
     # send stamp so an old inbox snapshot cannot consume today's batch.
     result['inbox_before_initials'] = sync_profile_inbox(campaign.sender_profile)
     result['initials'] = run_campaign_automation(campaign)
     result['sent'] += (result['initials'].get('delivery') or {}).get('sent', 0)
-    if discovery_state is not None:
-        campaign.last_run_summary = {**(campaign.last_run_summary or {}), 'salon_discovery_state': discovery_state}
+    if discovery_summary:
+        campaign.last_run_summary = {**(campaign.last_run_summary or {}), **discovery_summary}
         db.session.commit()
     if result['initials'].get('error'):
         result['error'] = 'Automatická dávka zlyhala; pozri stav kampane.'

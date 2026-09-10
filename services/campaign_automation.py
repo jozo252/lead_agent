@@ -209,8 +209,14 @@ def _campaign_candidates(campaign, limit, *, website_check_pool=False, require_v
         )
     )
 
+    locations = profile.get("location_keywords", [])
+    if profile.get("salon_discovery") is True:
+        from services.salon_discovery import salon_locations
+        locations = salon_locations(profile)
+        if not locations:
+            return []
     location_matches = []
-    for term in profile.get("location_keywords", []):
+    for term in locations:
         value = str(term or "").strip()
         if not value:
             continue
